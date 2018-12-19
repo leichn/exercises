@@ -197,11 +197,11 @@ typedef struct Decoder {
     AVRational start_pts_tb;
     int64_t next_pts;
     AVRational next_pts_tb;
-    SDL_Thread *decoder_tid;
+    SDL_Thread *decoder_tid;	// decode解码线程
 } Decoder;
 
 typedef struct VideoState {
-    SDL_Thread *read_tid;
+    SDL_Thread *read_tid;		// demux解复用线程
     AVInputFormat *iformat;
     int abort_request;
     int force_refresh;
@@ -216,9 +216,9 @@ typedef struct VideoState {
     AVFormatContext *ic;
     int realtime;
 
-    Clock audclk;
-    Clock vidclk;
-    Clock extclk;
+    Clock audclk;				// 音频时钟
+    Clock vidclk;				// 视频时钟
+    Clock extclk;				// 外部时钟
 
     FrameQueue pictq;
     FrameQueue subpq;
@@ -228,7 +228,7 @@ typedef struct VideoState {
     Decoder viddec;
     Decoder subdec;
 
-    int audio_stream;
+    int audio_stream;			// 音频流索引
 
     int av_sync_type;
 
@@ -238,7 +238,7 @@ typedef struct VideoState {
     double audio_diff_avg_coef;
     double audio_diff_threshold;
     int audio_diff_avg_count;
-    AVStream *audio_st;
+    AVStream *audio_st;			// 音频流
     PacketQueue audioq;
     int audio_hw_buf_size;
     uint8_t *audio_buf;
@@ -2683,7 +2683,7 @@ static int stream_component_open(VideoState *is, int stream_index)
         }
         if ((ret = decoder_start(&is->auddec, audio_thread, is)) < 0)
             goto out;
-        SDL_PauseAudioDevice(audio_dev, 0);
+        SDL_PauseAudioDevice(audio_dev, 0);		// 启用音频回调，开始播放音频
         break;
     case AVMEDIA_TYPE_VIDEO:
         is->video_stream = stream_index;

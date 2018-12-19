@@ -52,4 +52,5 @@
 #   error Unsupported CPU architecture.
 #endif
 
+#define FFMPEG_DATADIR "D:\\ffmpeg\\ffmpeg-4.1"
 #endif //AVS_CONFIG_H

@@ -78,7 +78,8 @@
     <IncludePath>.\libs\develop\SDL2-2.0.9\include;.\libs\develop\ffmpeg-20181212\include;$(IncludePath)</IncludePath>
     <LibraryPath>.\libs\develop\SDL2-2.0.9\lib\x64;.\libs\develop\ffmpeg-20181212\lib;$(LibraryPath)</LibraryPath>
     <LibraryWPath>$(LibraryWPath)</LibraryWPath>
-    <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
+    <OutDir>$(SolutionDir)\build\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)\build\$(Configuration)\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>

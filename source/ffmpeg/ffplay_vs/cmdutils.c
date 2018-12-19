@@ -34,7 +34,7 @@
 #include "libavformat/avformat.h"
 #include "libavfilter/avfilter.h"
 #include "libavdevice/avdevice.h"
-#include "libavresample/avresample.h"
+//-#include "libavresample/avresample.h"
 #include "libswscale/swscale.h"
 #include "libswresample/swresample.h"
 #include "libpostproc/postprocess.h"
@@ -45,7 +45,7 @@
 #include "libavutil/display.h"
 #include "libavutil/mathematics.h"
 #include "libavutil/imgutils.h"
-#include "libavutil/libm.h"
+//-#include "libavutil/libm.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/eval.h"
@@ -1126,55 +1126,55 @@ static int warned_cfg = 0;
 
 static void print_all_libs_info(int flags, int level)
 {
-    PRINT_LIB_INFO(avutil,     AVUTIL,     flags, level);
-    PRINT_LIB_INFO(avcodec,    AVCODEC,    flags, level);
-    PRINT_LIB_INFO(avformat,   AVFORMAT,   flags, level);
-    PRINT_LIB_INFO(avdevice,   AVDEVICE,   flags, level);
-    PRINT_LIB_INFO(avfilter,   AVFILTER,   flags, level);
-    PRINT_LIB_INFO(avresample, AVRESAMPLE, flags, level);
-    PRINT_LIB_INFO(swscale,    SWSCALE,    flags, level);
-    PRINT_LIB_INFO(swresample, SWRESAMPLE, flags, level);
-    PRINT_LIB_INFO(postproc,   POSTPROC,   flags, level);
+    //PRINT_LIB_INFO(avutil,     AVUTIL,     flags, level);
+    //PRINT_LIB_INFO(avcodec,    AVCODEC,    flags, level);
+    //PRINT_LIB_INFO(avformat,   AVFORMAT,   flags, level);
+    //PRINT_LIB_INFO(avdevice,   AVDEVICE,   flags, level);
+    //PRINT_LIB_INFO(avfilter,   AVFILTER,   flags, level);
+    //PRINT_LIB_INFO(avresample, AVRESAMPLE, flags, level);
+    //PRINT_LIB_INFO(swscale,    SWSCALE,    flags, level);
+    //PRINT_LIB_INFO(swresample, SWRESAMPLE, flags, level);
+    //PRINT_LIB_INFO(postproc,   POSTPROC,   flags, level);
 }
 
 static void print_program_info(int flags, int level)
 {
-    const char *indent = flags & INDENT? "  " : "";
+    //const char *indent = flags & INDENT? "  " : "";
 
-    av_log(NULL, level, "%s version " FFMPEG_VERSION, program_name);
-    if (flags & SHOW_COPYRIGHT)
-        av_log(NULL, level, " Copyright (c) %d-%d the FFmpeg developers",
-               program_birth_year, CONFIG_THIS_YEAR);
-    av_log(NULL, level, "\n");
-    av_log(NULL, level, "%sbuilt with %s\n", indent, CC_IDENT);
+    //av_log(NULL, level, "%s version " FFMPEG_VERSION, program_name);
+    //if (flags & SHOW_COPYRIGHT)
+    //    av_log(NULL, level, " Copyright (c) %d-%d the FFmpeg developers",
+    //           program_birth_year, CONFIG_THIS_YEAR);
+    //av_log(NULL, level, "\n");
+    //av_log(NULL, level, "%sbuilt with %s\n", indent, CC_IDENT);
 
-    av_log(NULL, level, "%sconfiguration: " FFMPEG_CONFIGURATION "\n", indent);
+    //av_log(NULL, level, "%sconfiguration: " FFMPEG_CONFIGURATION "\n", indent);
 }
 
 static void print_buildconf(int flags, int level)
 {
-    const char *indent = flags & INDENT ? "  " : "";
-    char str[] = { FFMPEG_CONFIGURATION };
-    char *conflist, *remove_tilde, *splitconf;
+    //const char *indent = flags & INDENT ? "  " : "";
+    //char str[] = { FFMPEG_CONFIGURATION };
+    //char *conflist, *remove_tilde, *splitconf;
 
-    // Change all the ' --' strings to '~--' so that
-    // they can be identified as tokens.
-    while ((conflist = strstr(str, " --")) != NULL) {
-        strncpy(conflist, "~--", 3);
-    }
+    //// Change all the ' --' strings to '~--' so that
+    //// they can be identified as tokens.
+    //while ((conflist = strstr(str, " --")) != NULL) {
+    //    strncpy(conflist, "~--", 3);
+    //}
 
-    // Compensate for the weirdness this would cause
-    // when passing 'pkg-config --static'.
-    while ((remove_tilde = strstr(str, "pkg-config~")) != NULL) {
-        strncpy(remove_tilde, "pkg-config ", 11);
-    }
+    //// Compensate for the weirdness this would cause
+    //// when passing 'pkg-config --static'.
+    //while ((remove_tilde = strstr(str, "pkg-config~")) != NULL) {
+    //    strncpy(remove_tilde, "pkg-config ", 11);
+    //}
 
-    splitconf = strtok(str, "~");
-    av_log(NULL, level, "\n%sconfiguration:\n", indent);
-    while (splitconf != NULL) {
-        av_log(NULL, level, "%s%s%s\n", indent, indent, splitconf);
-        splitconf = strtok(NULL, "~");
-    }
+    //splitconf = strtok(str, "~");
+    //av_log(NULL, level, "\n%sconfiguration:\n", indent);
+    //while (splitconf != NULL) {
+    //    av_log(NULL, level, "%s%s%s\n", indent, indent, splitconf);
+    //    splitconf = strtok(NULL, "~");
+    //}
 }
 
 void show_banner(int argc, char **argv, const OptionDef *options)
