@@ -3,6 +3,6 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LocalDebuggerEnvironment>PATH=.\libs\runtime; $(LocalDebuggerEnvironment)</LocalDebuggerEnvironment>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
-    <LocalDebuggerCommandArguments>..\..\..\resources\video\zhen.ts</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>..\..\..\resources\video\cuc_ieschool.flv</LocalDebuggerCommandArguments>
   </PropertyGroup>
 </Project>

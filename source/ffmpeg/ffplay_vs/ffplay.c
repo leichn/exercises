@@ -141,12 +141,19 @@ typedef struct AudioParams {
 } AudioParams;
 
 typedef struct Clock {
+	// 当前(待播放)帧显示时间戳
     double pts;           /* clock base */
+	// 当前帧显示时间戳与当前时钟时间的差值
     double pts_drift;     /* clock base minus time at which we updated the clock */
+	// 当前时钟(如视频时钟)最后一次更新时间，也可称当前时钟时间
     double last_updated;
+	// 
     double speed;
+	// 播放序列，所谓播放序列就是一段连续的播放动作，一个seek操作会启动一段新的播放序列
     int serial;           /* clock is based on a packet with this serial */
+	// 暂停标志
     int paused;
+	// 指向packet_serial
     int *queue_serial;    /* pointer to the current packet queue serial, used for obsolete clock detection */
 } Clock;
 
@@ -170,13 +177,13 @@ typedef struct FrameQueue {
     Frame queue[FRAME_QUEUE_SIZE];
     int rindex;
     int windex;
-    int size;
+    int size;				// 总帧数
     int max_size;
     int keep_last;
-    int rindex_shown;
+    int rindex_shown;		// 已显示帧数
     SDL_mutex *mutex;
     SDL_cond *cond;
-    PacketQueue *pktq;
+    PacketQueue *pktq;		// 指向对应的packet_queue
 } FrameQueue;
 
 enum {
@@ -744,6 +751,7 @@ static Frame *frame_queue_peek_last(FrameQueue *f)
     return &f->queue[f->rindex];
 }
 
+// 向队列尾部申请一个可写的帧空间，若无空间可写，则等待
 static Frame *frame_queue_peek_writable(FrameQueue *f)
 {
     /* wait until we have space to put a new frame */
@@ -760,6 +768,7 @@ static Frame *frame_queue_peek_writable(FrameQueue *f)
     return &f->queue[f->windex];
 }
 
+// 从队列头部读取一帧，只读取不删除，若无帧可读则等待
 static Frame *frame_queue_peek_readable(FrameQueue *f)
 {
     /* wait until we have a readable a new frame */
@@ -776,6 +785,7 @@ static Frame *frame_queue_peek_readable(FrameQueue *f)
     return &f->queue[(f->rindex + f->rindex_shown) % f->max_size];
 }
 
+// 向队列尾部压入一帧
 static void frame_queue_push(FrameQueue *f)
 {
     if (++f->windex == f->max_size)
@@ -786,6 +796,7 @@ static void frame_queue_push(FrameQueue *f)
     SDL_UnlockMutex(f->mutex);
 }
 
+// 从队列头部删除一帧，注意不读取直接删除
 static void frame_queue_next(FrameQueue *f)
 {
     if (f->keep_last && !f->rindex_shown) {
@@ -1530,6 +1541,7 @@ static void step_to_next_frame(VideoState *is)
     is->step = 1;
 }
 
+// 根据视频时钟与同步时钟(如音频时钟)的差异，校正delay值
 static double compute_target_delay(double delay, VideoState *is)
 {
     double sync_threshold, diff = 0;
@@ -1538,6 +1550,7 @@ static double compute_target_delay(double delay, VideoState *is)
     if (get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER) {
         /* if video is slave, we try to correct big delays by
            duplicating or deleting a frame */
+		// 视频时钟与同步时钟(如音频时钟)的差异
         diff = get_clock(&is->vidclk) - get_master_clock(is);
 
         /* skip or repeat frame. We take into account the
@@ -1574,8 +1587,8 @@ static double vp_duration(VideoState *is, Frame *vp, Frame *nextvp) {
 
 static void update_video_pts(VideoState *is, double pts, int64_t pos, int serial) {
     /* update current video pts */
-    set_clock(&is->vidclk, pts, serial);
-    sync_clock_to_slave(&is->extclk, &is->vidclk);
+    set_clock(&is->vidclk, pts, serial);			// 更新vidclock
+    sync_clock_to_slave(&is->extclk, &is->vidclk);	// 将extclock同步到vidclock
 }
 
 /* called to display each frame */
@@ -1604,19 +1617,20 @@ static void video_refresh(void *opaque, double *remaining_time)
 retry:
         if (frame_queue_nb_remaining(&is->pictq) == 0) {	// 所有帧已显示
             // nothing to do, no picture to display in the queue
-        } else {
+        } else {											// 有未显示帧
             double last_duration, duration, delay;
             Frame *vp, *lastvp;
 
             /* dequeue the picture */
-            lastvp = frame_queue_peek_last(&is->pictq);
-            vp = frame_queue_peek(&is->pictq);
+            lastvp = frame_queue_peek_last(&is->pictq);		// 上次已显示的帧
+            vp = frame_queue_peek(&is->pictq);				// 当前待显示的帧
 
             if (vp->serial != is->videoq.serial) {
                 frame_queue_next(&is->pictq);
                 goto retry;
             }
 
+			// lastvp和vp不是同一播放序列(一个seek会开始一个新播放序列)，将frame_timer更新为当前时间
             if (lastvp->serial != vp->serial)
                 is->frame_timer = av_gettime_relative() / 1000000.0;
 
@@ -1625,7 +1639,7 @@ retry:
 
             /* compute nominal last_duration */
             last_duration = vp_duration(is, lastvp, vp);
-            delay = compute_target_delay(last_duration, is);
+            delay = compute_target_delay(last_duration, is);	// 校正delay值
 
             time= av_gettime_relative()/1000000.0;
             if (time < is->frame_timer + delay) {
@@ -1633,20 +1647,23 @@ retry:
                 goto display;
             }
 
+			// 更新frame_timer值
             is->frame_timer += delay;
+			// 校正frame_timer值：若frame_timer落后于当前系统时间，且超过最大同步域值，则更新为当前系统时间
             if (delay > 0 && time - is->frame_timer > AV_SYNC_THRESHOLD_MAX)
                 is->frame_timer = time;
 
             SDL_LockMutex(is->pictq.mutex);
             if (!isnan(vp->pts))
-                update_video_pts(is, vp->pts, vp->pos, vp->serial);
+                update_video_pts(is, vp->pts, vp->pos, vp->serial);	// 更新视频时钟：时间戳、时钟时间
             SDL_UnlockMutex(is->pictq.mutex);
 
-            if (frame_queue_nb_remaining(&is->pictq) > 1) {
+            if (frame_queue_nb_remaining(&is->pictq) > 1) {			// 队列中未显示帧数>1
                 Frame *nextvp = frame_queue_peek_next(&is->pictq);
-                duration = vp_duration(is, vp, nextvp);
+                duration = vp_duration(is, vp, nextvp);				// 当前帧vp播放时长 = nextvp->pts - vp->pts
                 if(!is->step && (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) && time > is->frame_timer + duration){
-                    is->frame_drops_late++;
+					// 当前帧vp未能及时播放(帧播放时间小于当前系统时间)，根据丢帧策略作丢帧处理
+                    is->frame_drops_late++;		// framedrop丢帧处理有两处：1) packet入队列前，2) frame未及时显示
                     frame_queue_next(&is->pictq);
                     goto retry;
                 }
@@ -1765,7 +1782,9 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
 
     set_default_window_size(vp->width, vp->height, vp->sar);
 
+	// 将AVFrame拷入队列相应位置
     av_frame_move_ref(vp->frame, src_frame);
+	// 更新队列计数及写索引
     frame_queue_push(&is->pictq);
     return 0;
 }
@@ -3248,6 +3267,7 @@ static void toggle_audio_display(VideoState *is)
 static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
     double remaining_time = 0.0;
     SDL_PumpEvents();
+	// SDL event队列为空，则在while循环中播放视频帧。否则从队列头部取一个event，退出当前函数，在上级函数中处理event
     while (!SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT)) {
         if (!cursor_hidden && av_gettime_relative() - cursor_last_shown > CURSOR_HIDE_DELAY) {
             SDL_ShowCursor(0);
@@ -3308,23 +3328,23 @@ static void event_loop(VideoState *cur_stream)
             if (!cur_stream->width)
                 continue;
             switch (event.key.keysym.sym) {
-            case SDLK_f:
+            case SDLK_f:			// f键：强制刷新
                 toggle_full_screen(cur_stream);
                 cur_stream->force_refresh = 1;
                 break;
-            case SDLK_p:
-            case SDLK_SPACE:
+            case SDLK_p:			// p键
+            case SDLK_SPACE:		// 空格键：暂停
                 toggle_pause(cur_stream);
                 break;
-            case SDLK_m:
+            case SDLK_m:			// m键：静音
                 toggle_mute(cur_stream);
                 break;
-            case SDLK_KP_MULTIPLY:
-            case SDLK_0:
+            case SDLK_KP_MULTIPLY:	// *键：
+            case SDLK_0:			// 0键：音量加1
                 update_volume(cur_stream, 1, SDL_VOLUME_STEP);
                 break;
-            case SDLK_KP_DIVIDE:
-            case SDLK_9:
+            case SDLK_KP_DIVIDE:	// /键：
+            case SDLK_9:			// 9键：音量减1
                 update_volume(cur_stream, -1, SDL_VOLUME_STEP);
                 break;
             case SDLK_s: // S: Step to next frame
