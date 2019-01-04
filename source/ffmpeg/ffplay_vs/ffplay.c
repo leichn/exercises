@@ -121,7 +121,7 @@ typedef struct PacketQueue {
     int size;           // 队列所占内存空间大小
     int64_t duration;   // 队列中所有packet总的播放时长
     int abort_request;
-    int serial;
+    int serial;         // 播放序列，所谓播放序列就是一段连续的播放动作，一个seek操作会启动一段新的播放序列
     SDL_mutex *mutex;
     SDL_cond *cond;
 } PacketQueue;
@@ -147,7 +147,7 @@ typedef struct Clock {
     double pts_drift;     /* clock base minus time at which we updated the clock */
     // 当前时钟(如视频时钟)最后一次更新时间，也可称当前时钟时间
     double last_updated;
-    // 
+    // 时钟速度控制，用于控制播放速度
     double speed;
     // 播放序列，所谓播放序列就是一段连续的播放动作，一个seek操作会启动一段新的播放序列
     int serial;           /* clock is based on a packet with this serial */
@@ -246,7 +246,7 @@ typedef struct VideoState {
     double audio_diff_threshold;
     int audio_diff_avg_count;
     AVStream *audio_st;         // 音频流
-    PacketQueue audioq;
+    PacketQueue audioq;         // 音频packet队列
     int audio_hw_buf_size;
     uint8_t *audio_buf;
     uint8_t *audio_buf1;
@@ -254,16 +254,16 @@ typedef struct VideoState {
     unsigned int audio_buf1_size;
     int audio_buf_index; /* in bytes */
     int audio_write_buf_size;
-    int audio_volume;
-    int muted;
+    int audio_volume;           // 音量
+    int muted;                  // 静音状态
     struct AudioParams audio_src;
 #if CONFIG_AVFILTER
     struct AudioParams audio_filter_src;
 #endif
     struct AudioParams audio_tgt;
     struct SwrContext *swr_ctx;
-    int frame_drops_early;
-    int frame_drops_late;
+    int frame_drops_early;      // 丢弃视频packet计数
+    int frame_drops_late;       // 丢弃视频frame计数
 
     enum ShowMode {
         SHOW_MODE_NONE = -1, SHOW_MODE_VIDEO = 0, SHOW_MODE_WAVES, SHOW_MODE_RDFT, SHOW_MODE_NB
@@ -280,15 +280,15 @@ typedef struct VideoState {
     SDL_Texture *sub_texture;
     SDL_Texture *vid_texture;
 
-    int subtitle_stream;
-    AVStream *subtitle_st;
-    PacketQueue subtitleq;
+    int subtitle_stream;                // 字幕流索引
+    AVStream *subtitle_st;              // 字幕流
+    PacketQueue subtitleq;              // 字幕packet队列
 
-    double frame_timer;                 // 记录每帧播放的时间(时刻)，每帧更新
+    double frame_timer;                 // 记录最后一帧播放的时刻
     double frame_last_returned_time;
     double frame_last_filter_delay;
     int video_stream;
-    AVStream *video_st;
+    AVStream *video_st;                 // 视频流
     PacketQueue videoq;
     double max_frame_duration;      // maximum duration of a frame - above this, we consider the jump a timestamp discontinuity
     struct SwsContext *img_convert_ctx;
@@ -1404,7 +1404,7 @@ static void video_display(VideoState *is)
     SDL_RenderPresent(renderer);
 }
 
-// 返回值：上一帧的pts加上上一帧至今流逝的时间差
+// 返回值：如果按正常速度播放，则返回上一帧的pts；若是快进或快退播放，则返回上一帧的pts经校正后的值
 static double get_clock(Clock *c)
 {
     if (*c->queue_serial != c->serial)
@@ -1413,6 +1413,7 @@ static double get_clock(Clock *c)
         return c->pts;
     } else {
         double time = av_gettime_relative() / 1000000.0;
+        // 设c->speed为0，则展开得：(c->pts - c->last_updated) + time - (time - c->last_updated)*1 ＝ c->pts
         return c->pts_drift + time - (time - c->last_updated) * (1.0 - c->speed);
     }
 }
@@ -1520,6 +1521,7 @@ static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int seek_by_by
 static void stream_toggle_pause(VideoState *is)
 {
     if (is->paused) {
+        // 这里表示当前是暂停状态，将切换到继续播放状态。在继续播放之前，先将暂停期间流逝的时间加到frame_timer中
         is->frame_timer += av_gettime_relative() / 1000000.0 - is->vidclk.last_updated;
         if (is->read_pause_return != AVERROR(ENOSYS)) {
             is->vidclk.paused = 0;
@@ -1552,7 +1554,7 @@ static void step_to_next_frame(VideoState *is)
 {
     /* if the stream is paused unpause it, then step */
     if (is->paused)
-        stream_toggle_pause(is);
+        stream_toggle_pause(is);            // 确保切换到播放状态，播放一帧画面
     is->step = 1;
 }
 
@@ -1581,9 +1583,9 @@ static double compute_target_delay(double delay, VideoState *is)
         sync_threshold = FFMAX(AV_SYNC_THRESHOLD_MIN, FFMIN(AV_SYNC_THRESHOLD_MAX, delay));
         if (!isnan(diff) && fabs(diff) < is->max_frame_duration) {
             if (diff <= -sync_threshold)        // 视频时钟落后于同步时钟，且超过同步域值
-                delay = FFMAX(0, delay + diff); // 当前帧播放时间落后于同步时钟(delay+diff<0)则delay=0(视频追赶，立即播放)，否则delay=delay+diff
+                delay = FFMAX(0, delay + diff); // 当前帧播放时刻落后于同步时钟(delay+diff<0)则delay=0(视频追赶，立即播放)，否则delay=delay+diff
             else if (diff >= sync_threshold && delay > AV_SYNC_FRAMEDUP_THRESHOLD)  // 视频时钟超前于同步时钟，且超过同步域值，但上一帧播放时长超长
-                delay = delay + diff;           // 仅仅校正为delay=delay+diff，主要是AV_SYNC_FRAMEDUP_THRESHOLD参数的作用，不作同步补偿
+                delay = delay + diff;           // 仅仅校正为delay=delay+diff，主要是AV_SYNC_FRAMEDUP_THRESHOLD参数的作用
             else if (diff >= sync_threshold)    // 视频时钟超前于同步时钟，且超过同步域值
                 delay = 2 * delay;              // 视频播放要放慢脚步，delay扩大至2倍
         }
@@ -1656,7 +1658,7 @@ retry:
             if (lastvp->serial != vp->serial)
                 is->frame_timer = av_gettime_relative() / 1000000.0;
 
-            // 暂停处理：不停播放当前帧图像
+            // 暂停处理：不停播放上一帧图像
             if (is->paused)
                 goto display;
 
@@ -1665,11 +1667,11 @@ retry:
             delay = compute_target_delay(last_duration, is);    // 根据视频时钟和同步时钟的差值，计算delay值
 
             time= av_gettime_relative()/1000000.0;
-            // 当前帧播放时刻(is->frame_timer+delay)大于当前时刻(time)，表示播放时间未到
+            // 当前帧播放时刻(is->frame_timer+delay)大于当前时刻(time)，表示播放时刻未到
             if (time < is->frame_timer + delay) {
-                // 播放时间未到，则更新刷新时间remaining_time为当前时刻到下一播放时刻的时间差
+                // 播放时刻未到，则更新刷新时间remaining_time为当前时刻到下一播放时刻的时间差
                 *remaining_time = FFMIN(is->frame_timer + delay - time, *remaining_time);
-                // 播放时间未到，则不更新rindex，把上一帧再lastvp再播放一遍
+                // 播放时刻未到，则不更新rindex，把上一帧再lastvp再播放一遍
                 goto display;
             }
 
@@ -1688,7 +1690,7 @@ retry:
             if (frame_queue_nb_remaining(&is->pictq) > 1) {         // 队列中未显示帧数>1(只有一帧则不考虑丢帧)
                 Frame *nextvp = frame_queue_peek_next(&is->pictq);  // 下一帧：下一待显示的帧
                 duration = vp_duration(is, vp, nextvp);             // 当前帧vp播放时长 = nextvp->pts - vp->pts
-                // 1. 非步进模式；2. 丢帧策略生效；3. 当前帧vp未能及时播放，即帧播放时刻(is->frame_timer+duration)小于当前系统时刻(time)
+                // 1. 非步进模式；2. 丢帧策略生效；3. 当前帧vp未能及时播放，即下一帧播放时刻(is->frame_timer+duration)小于当前系统时刻(time)
                 if(!is->step && (framedrop>0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) && time > is->frame_timer + duration){
                     is->frame_drops_late++;         // framedrop丢帧处理有两处：1) packet入队列前，2) frame未及时显示(此处)
                     frame_queue_next(&is->pictq);   // 删除上一帧已显示帧，即删除lastvp，读指针加1(从lastvp更新到vp)
@@ -1731,11 +1733,12 @@ retry:
                     }
             }
 
-            frame_queue_next(&is->pictq);           // 删除上一帧已显示帧，即删除lastvp，读指针加1(从lastvp更新到vp，若有丢帧则是从vp更新到nextvp)
+            // 删除当前读指针元素，读指针+1。若未丢帧，读指针从lastvp更新到vp；若有丢帧，读指针从vp更新到nextvp
+            frame_queue_next(&is->pictq);
             is->force_refresh = 1;
 
             if (is->step && !is->paused)
-                stream_toggle_pause(is);
+                stream_toggle_pause(is);            // 逐帧播放模式下，播放一帧画面后暂停
         }
 display:
         /* display picture */
@@ -3428,7 +3431,7 @@ static void event_loop(VideoState *cur_stream)
             case SDLK_9:            // 9键：音量减1
                 update_volume(cur_stream, -1, SDL_VOLUME_STEP);
                 break;
-            case SDLK_s: // S: Step to next frame
+            case SDLK_s: // S: Step to next frame // s键：逐帧播放
                 step_to_next_frame(cur_stream);
                 break;
             case SDLK_a:
