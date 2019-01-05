@@ -352,6 +352,7 @@ int main(int argc, char *argv[])
                 {
                     printf("avcodec_receive_frame(): output is not available in this state - "
                             "user must try to send new input\n");
+					continue;
                 }
                 else if (ret == AVERROR(EINVAL))
                 {

@@ -239,7 +239,7 @@ int audio_decode_frame(AVCodecContext *p_codec_ctx, AVPacket *p_packet, uint8_t 
 // \param[out] len    音频数据缓冲区大小，单位字节
 // 回调函数返回后，stream指向的音频缓冲区将变为无效
 // 双声道采样点的顺序为LRLRLR
-void audio_callback(void *userdata, uint8_t *stream, int len)
+void sdl_audio_callback(void *userdata, uint8_t *stream, int len)
 {
     AVCodecContext *p_codec_ctx = (AVCodecContext *)userdata;
     int copy_len;           // 
@@ -500,7 +500,6 @@ int video_thread(void *arg)
         ret = avcodec_send_packet(p_codec_ctx, p_packet);
         if (ret != 0)
         {
-            res = -1;
             if (ret == AVERROR_EOF)
             {
                 printf("video avcodec_send_packet(): the decoder has been flushed\n");
@@ -522,6 +521,7 @@ int video_thread(void *arg)
                 printf("video avcodec_send_packet(): legitimate decoding errors\n");
             }
 
+			res = -1;
             goto exit5;
         }
         // A4.2 接收解码器输出的数据，此处只处理视频帧，每次接收一个packet，将之解码得到一个frame
@@ -537,6 +537,7 @@ int video_thread(void *arg)
             {
                 printf("video avcodec_receive_frame(): output is not available in this state - "
                         "user must try to send new input\n");
+				continue;
             }
             else if (ret == AVERROR(EINVAL))
             {
@@ -546,6 +547,7 @@ int video_thread(void *arg)
             {
                 printf("video avcodec_receive_frame(): legitimate decoding errors\n");
             }
+
             res = -1;
             goto exit6;
         }
@@ -613,9 +615,7 @@ exit1:
     avcodec_close(p_codec_ctx);
 exit0:
     return res;
-
 }
-
 
 int open_audio_stream(AVFormatContext* p_fmt_ctx, AVCodecContext* p_codec_ctx, int steam_idx)
 {
@@ -672,7 +672,7 @@ int open_audio_stream(AVFormatContext* p_fmt_ctx, AVCodecContext* p_codec_ctx, i
     wanted_spec.channels = p_codec_ctx->channels;   // 声音通道数
     wanted_spec.silence = 0;                        // 静音值
     wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;    // SDL声音缓冲区尺寸，单位是单声道采样点尺寸x通道数
-    wanted_spec.callback = audio_callback;          // 回调函数，若为NULL，则应使用SDL_QueueAudio()机制
+    wanted_spec.callback = sdl_audio_callback;      // 回调函数，若为NULL，则应使用SDL_QueueAudio()机制
     wanted_spec.userdata = p_codec_ctx;             // 提供给回调函数的参数
     if (SDL_OpenAudio(&wanted_spec, &actual_spec) < 0)
     {
