@@ -1,2 +1,2 @@
 #!/bin/bash
-gcc -o ffplayer ffplayer.c -lavutil -lavformat -lavcodec -lavutil -lswscale -lSDL2
+gcc -o ffplayer ffplayer.c -lavutil -lavformat -lavcodec -lavutil -lswscale -lswresample -lSDL2
