@@ -813,13 +813,6 @@ int open_video_stream(AVFormatContext* p_fmt_ctx, AVCodecContext* p_codec_ctx, i
 {
     AVCodecParameters* p_codec_par = NULL;
     AVCodec* p_codec = NULL;
-    SDL_Window* screen; 
-    SDL_Renderer* sdl_renderer;
-    SDL_Texture* sdl_texture;
-    SDL_Rect sdl_rect;
-    SDL_Thread* sdl_thread;
-    SDL_Event sdl_event;
-
     int ret;
 
     packet_queue_init(&s_video_pkt_queue);
