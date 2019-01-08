@@ -7,7 +7,7 @@ void packet_queue_init(packet_queue_t *q)
 }
 
 // 写队列尾部。pkt是一包还未解码的音频数据
-int packet_queue_push(packet_queue_t *q, AVPacket *pkt)
+int packet_queue_put(packet_queue_t *q, AVPacket *pkt)
 {
     AVPacketList *pkt_list;
     
@@ -46,7 +46,7 @@ int packet_queue_push(packet_queue_t *q, AVPacket *pkt)
 }
 
 // 读队列头部。
-int packet_queue_pop(packet_queue_t *q, AVPacket *pkt, int block)
+int packet_queue_get(packet_queue_t *q, AVPacket *pkt, int block)
 {
     AVPacketList *p_pkt_node;
     int ret;
@@ -87,5 +87,15 @@ int packet_queue_pop(packet_queue_t *q, AVPacket *pkt, int block)
     }
     SDL_UnlockMutex(q->mutex);
     return ret;
+}
+
+int packet_queue_put_nullpacket(packet_queue_t *q, int stream_index)
+{
+    AVPacket pkt1, *pkt = &pkt1;
+    av_init_packet(pkt);
+    pkt->data = NULL;
+    pkt->size = 0;
+    pkt->stream_index = stream_index;
+    return packet_queue_put(q, pkt);
 }
 

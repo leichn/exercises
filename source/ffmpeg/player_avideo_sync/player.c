@@ -34,9 +34,6 @@
 #define MAX_AUDIO_FRAME_SIZE 192000
 
 static packet_queue_t s_audio_pkt_queue;
-static FF_AudioParams s_audio_param_src;
-static FF_AudioParams s_audio_param_tgt;
-static struct SwrContext *s_audio_swr_ctx;
 static uint8_t *s_resample_buf = NULL;  // 重采样输出缓冲区
 static int s_resample_buf_len = 0;      // 重采样输出缓冲区长度
 
@@ -157,8 +154,8 @@ static player_stat_t *player_init(void)
     is->xleft   = 0;
 
     /* start video display */
-    if (frame_queue_init(&is->pictq, &is->videoq, VIDEO_PICTURE_QUEUE_SIZE, 1) < 0 ||
-        frame_queue_init(&is->sampq, &is->audioq, SAMPLE_QUEUE_SIZE, 1) < 0)
+    if (frame_queue_init(&is->picq, &is->videoq, VIDEO_PICTURE_QUEUE_SIZE, 1) < 0 ||
+        frame_queue_init(&is->audq, &is->audioq, SAMPLE_QUEUE_SIZE, 1) < 0)
     {
         goto fail;
     }
@@ -172,21 +169,14 @@ static player_stat_t *player_init(void)
     if (!(is->continue_read_thread = SDL_CreateCond()))
     {
         av_log(NULL, AV_LOG_FATAL, "SDL_CreateCond(): %s\n", SDL_GetError());
+fail:
+        player_deinit(is);
         goto fail;
     }
 
     init_clock(&is->vidclk, &is->videoq.serial);
     init_clock(&is->audclk, &is->audioq.serial);
     init_clock(&is->extclk, &is->extclk.serial);
-
-    is->read_tid = SDL_CreateThread(read_thread, "read_thread", is);
-    if (!is->read_tid)
-    {
-        av_log(NULL, AV_LOG_FATAL, "SDL_CreateThread(): %s\n", SDL_GetError());
-fail:
-        player_deinit(is);
-        return NULL;
-    }
 
     return is;
 }
@@ -209,7 +199,7 @@ int player_running(const char *p_input_file)
         do_exit(is);
     }
 
-    demux_running();
+    open_demux();
     video_decode_running();
     video_playing_runing();
     audio_decode_runing();

@@ -1,6 +1,19 @@
 
 
-int open_audio_stream(AVFormatContext* p_fmt_ctx, AVCodecContext* p_codec_ctx, int steam_idx)
+typedef struct {
+    int freq;
+    int channels;
+    int64_t channel_layout;
+    enum AVSampleFormat fmt;
+    int frame_size;
+    int bytes_per_sec;
+} audio_param_t;
+
+static audio_param_t s_audio_param_src;
+static audio_param_t s_audio_param_tgt;
+static struct SwrContext *s_audio_swr_ctx;
+
+int open_audio_stream(AVFormatContext* p_fmt_ctx, AVCodecContext* p_codec_ctx, const int steam_idx)
 {
     AVCodecParameters* p_codec_par = NULL;
     AVCodec* p_codec = NULL;
@@ -300,7 +313,7 @@ void sdl_audio_callback(void *userdata, uint8_t *stream, int len)
             p_packet = (AVPacket *)av_malloc(sizeof(AVPacket));
             
             // 1. 从队列中读出一包音频数据
-            if (packet_queue_pop(&s_audio_pkt_queue, p_packet, 1) <= 0)
+            if (packet_queue_get(&s_audio_pkt_queue, p_packet, 1) <= 0)
             {
                 if (s_input_finished)
                 {

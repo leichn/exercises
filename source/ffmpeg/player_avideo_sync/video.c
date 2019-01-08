@@ -146,7 +146,7 @@ int video_thread(void *arg)
         }
         
         // A3. 从队列中读出一包视频数据
-        if (packet_queue_pop(&s_video_pkt_queue, p_packet, 1) <= 0)
+        if (packet_queue_get(&s_video_pkt_queue, p_packet, 1) <= 0)
         {
             if (s_input_finished)
             {
@@ -283,8 +283,9 @@ exit0:
     return res;
 }
 
-int open_video_stream(AVFormatContext* p_fmt_ctx, AVCodecContext* p_codec_ctx, int steam_idx)
+int open_video_stream(AVFormatContext* p_fmt_ctx, int steam_idx)
 {
+    AVCodecContext* p_codec_ctx,
     AVCodecParameters* p_codec_par = NULL;
     AVCodec* p_codec = NULL;
     SDL_Window* screen; 
@@ -340,10 +341,7 @@ int open_video_stream(AVFormatContext* p_fmt_ctx, AVCodecContext* p_codec_ctx, i
 
     printf("frame rate %d FPS, refresh interval %d ms\n", frame_rate, interval);
 
-    // 2. 创建视频解码定时刷新线程，此线程为SDL内部线程，调用指定的回调函数
-    SDL_AddTimer(interval, sdl_time_cb_refresh, NULL);
-
-    // 3. 创建视频解码线程
+    // 2. 创建视频解码线程
     SDL_CreateThread(video_thread, "video thread", p_codec_ctx);
 
     return 0;

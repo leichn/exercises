@@ -24,4 +24,9 @@ typedef struct packet_queue_t {
 } packet_queue_t;
 #endif
 
+void packet_queue_init(packet_queue_t *q);
+int packet_queue_put(packet_queue_t *q, AVPacket *pkt);
+int packet_queue_get(packet_queue_t *q, AVPacket *pkt, int block);
+int packet_queue_put_nullpacket(packet_queue_t *q, int stream_index)
+
 #define
