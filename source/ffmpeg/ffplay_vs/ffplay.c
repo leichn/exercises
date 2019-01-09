@@ -1671,7 +1671,7 @@ retry:
             if (time < is->frame_timer + delay) {
                 // 播放时刻未到，则更新刷新时间remaining_time为当前时刻到下一播放时刻的时间差
                 *remaining_time = FFMIN(is->frame_timer + delay - time, *remaining_time);
-                // 播放时刻未到，则不更新rindex，把上一帧再lastvp再播放一遍
+                // 播放时刻未到，则不更新rindex。(窗口大小变化或用户按刷新键force_refresh生效)把上一帧lastvp再播放一遍，否则无动作。
                 goto display;
             }
 

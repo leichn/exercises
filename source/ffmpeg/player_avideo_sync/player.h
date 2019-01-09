@@ -10,6 +10,8 @@
 #include <SDL2/SDL_render.h>
 #include <SDL2/SDL_rect.h>
 
+#include "demux.h"
+
 #define VIDEO_PICTURE_QUEUE_SIZE 3
 #define SUBPICTURE_QUEUE_SIZE 16
 #define SAMPLE_QUEUE_SIZE 9
@@ -27,7 +29,7 @@ typedef struct {
     int *queue_serial;              // 指向packet_serial
 }   clock_t;
 
-
+#if 0
 typedef struct {
     SDL_Thread *read_tid;           // demux解复用线程
     AVInputFormat *iformat;
@@ -103,6 +105,22 @@ typedef struct {
 
     SDL_cond *continue_read_thread;
 }player_stat_t;
+#else
+typedef struct {
+
+    clock_t audclk;                   // 音频时钟
+    clock_t vidclk;                   // 视频时钟
+    clock_t extclk;                   // 外部时钟
+
+    packet_queue_t aud_pkt_q;
+    packet_queue_t vid_pkt_q;
+    frame_queue_t aud_frm_q;
+    frame_queue_t vid_frm_q;
+
+    player_demux_t demux_stat;
+
+}player_stat_t;
+#endif
 
 int player_running(const char *p_input_file);
 

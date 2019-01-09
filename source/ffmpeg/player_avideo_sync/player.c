@@ -154,17 +154,20 @@ static player_stat_t *player_init(void)
     is->xleft   = 0;
 
     /* start video display */
-    if (frame_queue_init(&is->picq, &is->videoq, VIDEO_PICTURE_QUEUE_SIZE, 1) < 0 ||
-        frame_queue_init(&is->audq, &is->audioq, SAMPLE_QUEUE_SIZE, 1) < 0)
+    if (frame_queue_init(&is->vid_frm_q, &is->vid_pkt_q, VIDEO_PICTURE_QUEUE_SIZE, 1) < 0 ||
+        frame_queue_init(&is->aud_frm_q, &is->aud_pkt_q, SAMPLE_QUEUE_SIZE, 1) < 0)
     {
         goto fail;
     }
 
-    if (packet_queue_init(&is->videoq) < 0 ||
-        packet_queue_init(&is->audioq) < 0)
+    if (packet_queue_init(&is->vid_pkt_q) < 0 ||
+        packet_queue_init(&is->aud_pkt_q) < 0)
     {
         goto fail;
     }
+
+    is->demux_stat->p_aud_pkt_q = &is->aud_pkt_q;
+    is->demux_stat->p_vid_pkt_q = &is->vid_pkt_q;
 
     if (!(is->continue_read_thread = SDL_CreateCond()))
     {
@@ -174,9 +177,8 @@ fail:
         goto fail;
     }
 
-    init_clock(&is->vidclk, &is->videoq.serial);
-    init_clock(&is->audclk, &is->audioq.serial);
-    init_clock(&is->extclk, &is->extclk.serial);
+    init_clock(&is->vidclk, &is->vid_pkt_q.serial);
+    init_clock(&is->audclk, &is->aud_pkt_q.serial);
 
     return is;
 }
@@ -199,11 +201,8 @@ int player_running(const char *p_input_file)
         do_exit(is);
     }
 
-    open_demux();
-    video_decode_running();
-    video_playing_runing();
-    audio_decode_runing();
-    audio_playing_runing();
+    open_demux(p_input_file, &is->demux_stat);
+    open_video(is->demux_stat->p_stream, &is->video_stat);
 
     while (1)
     {

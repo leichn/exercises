@@ -70,11 +70,6 @@ int packet_queue_get(packet_queue_t *q, AVPacket *pkt, int block)
             ret = 1;
             break;
         }
-        else if (s_input_finished)  // 队列已空，文件已处理完
-        {
-            ret = 0;
-            break;
-        }
         else if (!block)            // 队列空且阻塞标志无效，则立即退出
         {
             ret = 0;
