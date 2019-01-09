@@ -202,7 +202,7 @@ int player_running(const char *p_input_file)
     }
 
     open_demux(p_input_file, &is->demux_stat);
-    open_video(is->demux_stat->p_stream, &is->video_stat);
+    open_video(is);
 
     while (1)
     {

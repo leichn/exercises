@@ -12,6 +12,12 @@ typedef struct {
 }   sdl_video_t;
 
 typedef struct {
+    AVFormatContext *p_fmt_ctx;
+    AVStream *p_stream;
+    AVCodecContext *p_codec_ctx;
+    packet_queue_t *p_pkt_queue;
+    frame_queue_t *p_frm_queue;
+    
     double frame_timer;             // 记录最后一帧播放的时刻
     sdl_video_t sdl;
 }   player_video_t;
@@ -23,12 +29,40 @@ int video_init_decode()
 
 }
 
+static int queue_picture(player_stat_t *is, AVFrame *src_frame, double pts, double duration, int64_t pos)
+{
+    frame_t *vp;
+
+    if (!(vp = frame_queue_peek_writable(is->p_frm_queue)))
+        return -1;
+
+    vp->sar = src_frame->sample_aspect_ratio;
+    vp->uploaded = 0;
+
+    vp->width = src_frame->width;
+    vp->height = src_frame->height;
+    vp->format = src_frame->format;
+
+    vp->pts = pts;
+    vp->duration = duration;
+    vp->pos = pos;
+    //vp->serial = serial;
+
+    //set_default_window_size(vp->width, vp->height, vp->sar);
+
+    // 将AVFrame拷入队列相应位置
+    av_frame_move_ref(vp->frame, src_frame);
+    // 更新队列计数及写索引
+    frame_queue_push(is->p_frm_queue);
+    return 0;
+}
+
 
 // 从packet_queue中取一个packet，解码生成frame
-static int decoder_decode_frame(AVCodecContext *p_codec_ctx, AVFrame *frame)
+static int video_decode_frame(AVCodecContext *p_codec_ctx, AVFrame *frame)
 {
-    int ret = AVERROR(EAGAIN);
-
+    int ret;
+    
     while (1)
     {
         AVPacket pkt;
@@ -43,13 +77,13 @@ static int decoder_decode_frame(AVCodecContext *p_codec_ctx, AVFrame *frame)
             //     解码器缓存一定数量的packet后，才有解码后的frame输出
             //     frame输出顺序是按pts的顺序，如IBBPBBP
             //     frame->pkt_pos变量是此frame对应的packet在视频文件中的偏移地址，值同pkt.pos
-            ret = avcodec_receive_frame(d->avctx, frame);
+            ret = avcodec_receive_frame(p_codec_ctx, frame);
             if (ret < 0)
             {
                 if (ret == AVERROR_EOF)
                 {
                     printf("video avcodec_send_packet(): the decoder has been flushed\n");
-                    avcodec_flush_buffers(d->avctx);
+                    avcodec_flush_buffers(p_codec_ctx);
                     return 0;
                 }
                 else if (ret == AVERROR(EAGAIN))
@@ -73,27 +107,25 @@ static int decoder_decode_frame(AVCodecContext *p_codec_ctx, AVFrame *frame)
         }
 
         // 1. 取出一个packet。使用pkt对应的serial赋值给d->pkt_serial
-        if (packet_queue_get(d->queue, &pkt, true) < 0)
+        if (packet_queue_get(p_codec_ctx, &pkt, true) < 0)
         {
             return -1;
         }
 
         // packet_queue中第一个总是flush_pkt。每次seek操作会插入flush_pkt，更新serial，开启新的播放序列
-        if (pkt.data == flush_pkt.data)
+        if (pkt.data == NULL)
         {
             // 复位解码器内部状态/刷新内部缓冲区。当seek操作或切换流时应调用此函数。
-            avcodec_flush_buffers(d->avctx);
+            avcodec_flush_buffers(p_codec_ctx);
         }
         else
         {
             // 2. 将packet发送给解码器
             //    发送packet的顺序是按dts递增的顺序，如IPBBPBB
             //    pkt.pos变量可以标识当前packet在视频文件中的地址偏移
-            if (avcodec_send_packet(d->avctx, &pkt) == AVERROR(EAGAIN))
+            if (avcodec_send_packet(p_codec_ctx, &pkt) == AVERROR(EAGAIN))
             {
                 printf("Receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
-                d->packet_pending = 1;
-                av_packet_move_ref(&d->pkt, &pkt);
             }
 
             av_packet_unref(&pkt);
@@ -104,121 +136,44 @@ static int decoder_decode_frame(AVCodecContext *p_codec_ctx, AVFrame *frame)
 // 将视频包解码得到视频帧，然后写入picture队列
 int video_decode_thread(void *arg)
 {
-    AVCodecContext *p_codec_ctx = (AVCodecContext *)arg;
-
-    AVFrame* p_frame = NULL;
-    AVFrame* p_frm_yuv = NULL;
-    AVPacket* p_packet = NULL;
-    struct SwsContext*  sws_ctx = NULL;
-    int buf_size;
-    uint8_t* buffer = NULL;
-
-    int ret = 0;
-    int res = -1;
+    player_video_t *is = (player_video_t *)arg;
+    AVFrame *p_frame = av_frame_alloc();
+    double pts;
+    double duration;
+    int ret;
+    int got_picture;
+    AVRational tb = is->p_stream->time_base;
+    AVRational frame_rate = av_guess_frame_rate(is->p_fmt_ctx, is->p_stream, NULL);
     
-    p_packet = (AVPacket *)av_malloc(sizeof(AVPacket));
-
-    // 分配AVFrame结构，注意并不分配data buffer(即AVFrame.*data[])
-    p_frame = av_frame_alloc();
     if (p_frame == NULL)
     {
         printf("av_frame_alloc() for p_frame failed\n");
-        res = -1;
-        goto exit0;
+        return AVERROR(ENOMEM);
     }
 
     while (1)
     {
-        // 从队列中读出一包视频数据
-        if (packet_queue_get(&s_video_pkt_queue, p_packet, 1) <= 0)
+        got_picture = video_decode_frame(is->p_codec_ctx, is->p_pkt_queue, p_frame)
+        if (got_picture < 0)
         {
-            if (s_input_finished)
-            {
-                av_packet_unref(p_packet);
-                p_packet = NULL;    // flush decoder
-                printf("Flushing video decoder...\n");
-            }
-            else
-            {
-                av_packet_unref(p_packet);
-                return;
-            }
+            goto exit;
+        }
+        
+        duration = (frame_rate.num && frame_rate.den ? av_q2d((AVRational){frame_rate.den, frame_rate.num}) : 0);   // 当前帧播放时长
+        pts = (p_frame->pts == AV_NOPTS_VALUE) ? NAN : p_frame->pts * av_q2d(tb);   // 当前帧显示时间戳
+        ret = queue_picture(is, p_frame, pts, duration, p_frame->pkt_pos);   // 将当前帧压入frame_queue
+        av_frame_unref(p_frame);
+
+        if (ret < 0)
+        {
+            goto exit;
         }
 
-        // 向解码器喂数据，一个packet可能是一个视频帧或多个音频帧，此处音频帧已被上一句滤掉
-        ret = avcodec_send_packet(p_codec_ctx, p_packet);
-        if (ret != 0)
-        {
-            if (ret == AVERROR_EOF)
-            {
-                printf("video avcodec_send_packet(): the decoder has been flushed\n");
-            }
-            else if (ret == AVERROR(EAGAIN))
-            {
-                printf("video avcodec_send_packet(): input is not accepted in the current state\n");
-            }
-            else if (ret == AVERROR(EINVAL))
-            {
-                printf("video avcodec_send_packet(): codec not opened, it is an encoder, or requires flush\n");
-            }
-            else if (ret == AVERROR(ENOMEM))
-            {
-                printf("video avcodec_send_packet(): failed to add packet to internal queue, or similar\n");
-            }
-            else
-            {
-                printf("video avcodec_send_packet(): legitimate decoding errors\n");
-            }
-
-			res = -1;
-            goto exit5;
-        }
-        // 接收解码器输出的数据，此处只处理视频帧，每次接收一个packet，将之解码得到一个frame
-        ret = avcodec_receive_frame(p_codec_ctx, p_frame);
-        if (ret != 0)
-        {
-            if (ret == AVERROR_EOF)
-            {
-                printf("video avcodec_receive_frame(): the decoder has been fully flushed\n");
-                s_vdecode_finished = true;
-            }
-            else if (ret == AVERROR(EAGAIN))
-            {
-                printf("video avcodec_receive_frame(): output is not available in this state - "
-                        "user must try to send new input\n");
-				continue;
-            }
-            else if (ret == AVERROR(EINVAL))
-            {
-                printf("video avcodec_receive_frame(): codec not opened, or it is an encoder\n");
-            }
-            else
-            {
-                printf("video avcodec_receive_frame(): legitimate decoding errors\n");
-            }
-
-            res = -1;
-            goto exit6;
-        }
     }
 
-exit6:
-    if (p_packet != NULL)
-    {
-        av_packet_unref(p_packet);
-    }
-exit5:
-    sws_freeContext(sws_ctx); 
-exit4:
-    av_free(buffer);
-exit3:
-    av_frame_free(&p_frm_yuv);
-exit2:
+exit:
     av_frame_free(&p_frame);
-exit1:
-    avcodec_close(p_codec_ctx);
-exit0:
-    return res;
+
 }
 
 int video_init_playing()
@@ -232,7 +187,7 @@ static void video_image_display(VideoState *is)
     Frame *sp = NULL;
     SDL_Rect rect;
 
-    vp = frame_queue_peek_last(&is->pictq);
+    vp = frame_queue_peek_last(is->p_frm_queue);
 
     calculate_display_rect(&rect, is->xleft, is->ytop, is->width, is->height, vp->width, vp->height, vp->sar);
 
@@ -276,82 +231,78 @@ static void video_display(VideoState *is)
 /* called to display each frame */
 static void video_refresh(void *opaque, double *remaining_time)
 {
-    VideoState *is = opaque;
+    player_video_t *is = (player_video_t *)opaque;
     double time;
 
-    Frame *sp, *sp2;
+    frame_t *sp, *sp2;
 
-    // 视频播放
-    if (is->video_st) {
 retry:
-        if (frame_queue_nb_remaining(&is->pictq) == 0) {    // 所有帧已显示
-            // nothing to do, no picture to display in the queue
-        } else {                                            // 有未显示帧
-            double last_duration, duration, delay;
-            Frame *vp, *lastvp;
-
-            /* dequeue the picture */
-            lastvp = frame_queue_peek_last(&is->pictq);     // 上一帧：上次已显示的帧
-            vp = frame_queue_peek(&is->pictq);              // 当前帧：当前待显示的帧
-
-            if (vp->serial != is->videoq.serial) {
-                frame_queue_next(&is->pictq);
-                goto retry;
-            }
-
-            // lastvp和vp不是同一播放序列(一个seek会开始一个新播放序列)，将frame_timer更新为当前时间
-            if (lastvp->serial != vp->serial)
-                is->frame_timer = av_gettime_relative() / 1000000.0;
-
-            // 暂停处理：不停播放上一帧图像
-            if (is->paused)
-                goto display;
-
-            /* compute nominal last_duration */
-            last_duration = vp_duration(is, lastvp, vp);        // 上一帧播放时长：vp->pts - lastvp->pts
-            delay = compute_target_delay(last_duration, is);    // 根据视频时钟和同步时钟的差值，计算delay值
-
-            time= av_gettime_relative()/1000000.0;
-            // 当前帧播放时刻(is->frame_timer+delay)大于当前时刻(time)，表示播放时刻未到
-            if (time < is->frame_timer + delay) {
-                // 播放时刻未到，则更新刷新时间remaining_time为当前时刻到下一播放时刻的时间差
-                *remaining_time = FFMIN(is->frame_timer + delay - time, *remaining_time);
-                // 播放时刻未到，则不更新rindex，把上一帧lastvp再播放一遍
-                goto display;
-            }
-
-            // 更新frame_timer值
-            is->frame_timer += delay;
-            // 校正frame_timer值：若frame_timer落后于当前系统时间太久(超过最大同步域值)，则更新为当前系统时间
-            if (delay > 0 && time - is->frame_timer > AV_SYNC_THRESHOLD_MAX)
-                is->frame_timer = time;
-
-            SDL_LockMutex(is->pictq.mutex);
-            if (!isnan(vp->pts))
-                update_video_pts(is, vp->pts, vp->pos, vp->serial); // 更新视频时钟：时间戳、时钟时间
-            SDL_UnlockMutex(is->pictq.mutex);
-
-            // 是否要丢弃未能及时播放的视频帧
-            if (frame_queue_nb_remaining(&is->pictq) > 1) {         // 队列中未显示帧数>1(只有一帧则不考虑丢帧)
-                Frame *nextvp = frame_queue_peek_next(&is->pictq);  // 下一帧：下一待显示的帧
-                duration = vp_duration(is, vp, nextvp);             // 当前帧vp播放时长 = nextvp->pts - vp->pts
-                // 当前帧vp未能及时播放，即下一帧播放时刻(is->frame_timer+duration)小于当前系统时刻(time)
-                if (time > is->frame_timer + duration)
-                {
-                    is->frame_drops_late++;         // framedrop丢帧处理有两处：1) packet入队列前，2) frame未及时显示(此处)
-                    frame_queue_next(&is->pictq);   // 删除上一帧已显示帧，即删除lastvp，读指针加1(从lastvp更新到vp)
-                    goto retry;
-                }
-            }
-
-            // 删除当前读指针元素，读指针+1。若未丢帧，读指针从lastvp更新到vp；若有丢帧，读指针从vp更新到nextvp
-            frame_queue_next(&is->pictq);
-        }
-display:
-        /* display picture */
-        //-if (is->force_refresh && is->pictq.rindex_shown)
-            video_display(is);                      // 取出当前帧vp(若有丢帧是nextvp)进行播放
+    if (frame_queue_nb_remaining(is->p_frm_queue) == 0)  // 所有帧已显示
+    {    
+        // nothing to do, no picture to display in the queue
+        return;
     }
+
+    double last_duration, duration, delay;
+    frame_t *vp, *lastvp;
+
+    /* dequeue the picture */
+    lastvp = frame_queue_peek_last(is->p_frm_queue);     // 上一帧：上次已显示的帧
+    vp = frame_queue_peek(&is->p_frm_queue);              // 当前帧：当前待显示的帧
+
+    if (vp->serial != is->videoq.serial) {
+        frame_queue_next(is->p_frm_queue);
+        goto retry;
+    }
+
+    // lastvp和vp不是同一播放序列(一个seek会开始一个新播放序列)，将frame_timer更新为当前时间
+    if (lastvp->serial != vp->serial)
+        is->frame_timer = av_gettime_relative() / 1000000.0;
+
+    /* compute nominal last_duration */
+    last_duration = vp_duration(is, lastvp, vp);        // 上一帧播放时长：vp->pts - lastvp->pts
+    delay = compute_target_delay(last_duration, is);    // 根据视频时钟和同步时钟的差值，计算delay值
+
+    time= av_gettime_relative()/1000000.0;
+    // 当前帧播放时刻(is->frame_timer+delay)大于当前时刻(time)，表示播放时刻未到
+    if (time < is->frame_timer + delay) {
+        // 播放时刻未到，则更新刷新时间remaining_time为当前时刻到下一播放时刻的时间差
+        *remaining_time = FFMIN(is->frame_timer + delay - time, *remaining_time);
+        // 播放时刻未到，则不更新rindex，把上一帧lastvp再播放一遍
+        goto display;
+    }
+
+    // 更新frame_timer值
+    is->frame_timer += delay;
+    // 校正frame_timer值：若frame_timer落后于当前系统时间太久(超过最大同步域值)，则更新为当前系统时间
+    if (delay > 0 && time - is->frame_timer > AV_SYNC_THRESHOLD_MAX)
+        is->frame_timer = time;
+
+    SDL_LockMutex(is->p_frm_queue->mutex);
+    if (!isnan(vp->pts))
+        update_video_pts(is, vp->pts, vp->pos, vp->serial); // 更新视频时钟：时间戳、时钟时间
+    SDL_UnlockMutex(is->p_frm_queue->mutex);
+
+    // 是否要丢弃未能及时播放的视频帧
+    if (frame_queue_nb_remaining(is->p_frm_queue) > 1)  // 队列中未显示帧数>1(只有一帧则不考虑丢帧)
+    {         
+        frame_t *nextvp = frame_queue_peek_next(is->p_frm_queue);  // 下一帧：下一待显示的帧
+        duration = vp_duration(is, vp, nextvp);             // 当前帧vp播放时长 = nextvp->pts - vp->pts
+        // 当前帧vp未能及时播放，即下一帧播放时刻(is->frame_timer+duration)小于当前系统时刻(time)
+        if (time > is->frame_timer + duration)
+        {
+            frame_queue_next(is->p_frm_queue);   // 删除上一帧已显示帧，即删除lastvp，读指针加1(从lastvp更新到vp)
+            goto retry;
+        }
+    }
+
+    // 删除当前读指针元素，读指针+1。若未丢帧，读指针从lastvp更新到vp；若有丢帧，读指针从vp更新到nextvp
+    frame_queue_next(is->p_frm_queue);
+
+display:
+    /* display picture */
+    //-if (is->force_refresh && is->pictq.rindex_shown)
+        video_display(is);                      // 取出当前帧vp(若有丢帧是nextvp)进行播放
 }
 
 static void video_playing_thread(void *arg)
@@ -422,6 +373,7 @@ int open_video_stream(const AVStream* p_stream)
 {
     AVCodecParameters* p_codec_par = NULL;
     AVCodec* p_codec = NULL;
+    AVCodecContext* p_codec_ctx = NULL;
     int ret;
 
     // 1. 为视频流构建解码器AVCodecContext
@@ -474,8 +426,9 @@ int open_video_stream(const AVStream* p_stream)
     return 0;
 }
 
-int open_video(const AVStream* p_stream)
+int open_video(player_stat_t *is)
 {
+    s_video_stat.p_fmt_ctx = is->
     open_video_stream(p_stream);
     open_video_playing();
 

@@ -116,9 +116,6 @@ typedef struct {
     packet_queue_t vid_pkt_q;
     frame_queue_t aud_frm_q;
     frame_queue_t vid_frm_q;
-
-    player_demux_t demux_stat;
-
 }player_stat_t;
 #endif
 
