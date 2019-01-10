@@ -619,7 +619,7 @@ int video_thread(void *arg)
                 printf("video avcodec_send_packet(): legitimate decoding errors\n");
             }
 
-			res = -1;
+            res = -1;
             goto exit5;
         }
         // A4.2 接收解码器输出的数据，此处只处理视频帧，每次接收一个packet，将之解码得到一个frame
@@ -635,7 +635,7 @@ int video_thread(void *arg)
             {
                 printf("video avcodec_receive_frame(): output is not available in this state - "
                         "user must try to send new input\n");
-				continue;
+                continue;
             }
             else if (ret == AVERROR(EINVAL))
             {

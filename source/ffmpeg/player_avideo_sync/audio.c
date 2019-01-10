@@ -256,21 +256,21 @@ static int audio_resample(player_stat_t *is)
     if (af->frame->format        != is->audio_param_src.fmt            ||
         dec_channel_layout       != is->audio_param_src.channel_layout ||
         af->frame->sample_rate   != is->audio_param_src.freq           ||
-        (wanted_nb_samples       != af->frame->nb_samples && !is->swr_ctx))
+        (wanted_nb_samples       != af->frame->nb_samples && !is->audio_swr_ctx))
     {
-        swr_free(&is->swr_ctx);
-        // 使用frame(源)和is->audio_param_tgt(目标)中的音频参数来设置is->swr_ctx
-        is->swr_ctx = swr_alloc_set_opts(NULL,
+        swr_free(&is->audio_swr_ctx);
+        // 使用frame(源)和is->audio_param_tgt(目标)中的音频参数来设置is->audio_swr_ctx
+        is->audio_swr_ctx = swr_alloc_set_opts(NULL,
                                          is->audio_param_tgt.channel_layout, is->audio_param_tgt.fmt, is->audio_param_tgt.freq,
                                          dec_channel_layout,           af->frame->format, af->frame->sample_rate,
                                          0, NULL);
-        if (!is->swr_ctx || swr_init(is->swr_ctx) < 0)
+        if (!is->audio_swr_ctx || swr_init(is->audio_swr_ctx) < 0)
         {
             av_log(NULL, AV_LOG_ERROR,
                    "Cannot create sample rate converter for conversion of %d Hz %s %d channels to %d Hz %s %d channels!\n",
                     af->frame->sample_rate, av_get_sample_fmt_name(af->frame->format), af->frame->channels,
                     is->audio_param_tgt.freq, av_get_sample_fmt_name(is->audio_param_tgt.fmt), is->audio_param_tgt.channels);
-            swr_free(&is->swr_ctx);
+            swr_free(&is->audio_swr_ctx);
             return -1;
         }
         // 使用frame中的参数更新is->audio_src，第一次更新后后面基本不用执行此if分支了，因为一个音频流中各frame通用参数一样
@@ -280,7 +280,7 @@ static int audio_resample(player_stat_t *is)
         is->audio_param_src.fmt = af->frame->format;
     }
 
-    if (is->swr_ctx)
+    if (is->audio_swr_ctx)
     {
         // 重采样输入参数1：输入音频样本数是af->frame->nb_samples
         // 重采样输入参数2：输入音频缓冲区
@@ -302,7 +302,7 @@ static int audio_resample(player_stat_t *is)
         if (wanted_nb_samples != af->frame->nb_samples)
         {
             // 重采样补偿：不清楚参数怎么算的
-            if (swr_set_compensation(is->swr_ctx, (wanted_nb_samples - af->frame->nb_samples) * is->audio_param_tgt.freq / af->frame->sample_rate, 
+            if (swr_set_compensation(is->audio_swr_ctx, (wanted_nb_samples - af->frame->nb_samples) * is->audio_param_tgt.freq / af->frame->sample_rate, 
                                      wanted_nb_samples * is->audio_param_tgt.freq / af->frame->sample_rate) < 0) {
                 av_log(NULL, AV_LOG_ERROR, "swr_set_compensation() failed\n");
                 return -1;
@@ -312,7 +312,7 @@ static int audio_resample(player_stat_t *is)
         if (!is->audio_buf1)
             return AVERROR(ENOMEM);
         // 音频重采样：返回值是重采样后得到的音频数据中单个声道的样本数
-        len2 = swr_convert(is->swr_ctx, out, out_count, in, af->frame->nb_samples);
+        len2 = swr_convert(is->audio_swr_ctx, out, out_count, in, af->frame->nb_samples);
         if (len2 < 0)
         {
             av_log(NULL, AV_LOG_ERROR, "swr_convert() failed\n");
@@ -321,8 +321,8 @@ static int audio_resample(player_stat_t *is)
         if (len2 == out_count)
         {
             av_log(NULL, AV_LOG_WARNING, "audio buffer is probably too small\n");
-            if (swr_init(is->swr_ctx) < 0)
-                swr_free(&is->swr_ctx);
+            if (swr_init(is->audio_swr_ctx) < 0)
+                swr_free(&is->audio_swr_ctx);
         }
         is->audio_buf = is->audio_buf1;
         // 重采样返回的一帧音频数据大小(以字节为单位)

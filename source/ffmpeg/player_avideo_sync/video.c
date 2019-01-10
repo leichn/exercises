@@ -159,7 +159,6 @@ static void video_image_display(player_stat_t *is)
 
     vp = frame_queue_peek_last(&is->video_frm_queue);
 
-#if 0
     //-calculate_display_rect(&rect, is->xleft, is->ytop, is->width, is->height, vp->width, vp->height, vp->sar);
 
     if (!vp->uploaded) {
@@ -171,21 +170,7 @@ static void video_image_display(player_stat_t *is)
 
     set_sdl_yuv_conversion_mode(vp->frame);
     SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
-    set_sdl_yuv_conversion_mode(NULL);
-    if (sp) {
-        int i;
-        double xratio = (double)rect.w / (double)sp->width;
-        double yratio = (double)rect.h / (double)sp->height;
-        for (i = 0; i < sp->sub.num_rects; i++) {
-            SDL_Rect *sub_rect = (SDL_Rect*)sp->sub.rects[i];
-            SDL_Rect target = {.x = rect.x + sub_rect->x * xratio,
-                               .y = rect.y + sub_rect->y * yratio,
-                               .w = sub_rect->w * xratio,
-                               .h = sub_rect->h * yratio};
-            SDL_RenderCopy(renderer, is->sub_texture, sub_rect, &target);
-        }
-    }
-#endif
+
 }
 
 
@@ -201,7 +186,7 @@ static double compute_target_delay(double delay, player_stat_t *is)
     /* if video is slave, we try to correct big delays by
        duplicating or deleting a frame */
     // 视频时钟与同步时钟(如音频时钟)的差异，时钟值是上一帧pts值(实为：上一帧pts + 上一帧至今流逝的时间差)
-    diff = get_clock(&is->video_clk) - get_clock(is->audio_clk);
+    diff = get_clock(&is->video_clk) - get_clock(&is->audio_clk);
     // delay是上一帧播放时长：当前帧(待播放的帧)播放时间与上一帧播放时间差理论值
     // diff是视频时钟与同步时钟的差值
 
@@ -253,9 +238,72 @@ static void video_display(player_stat_t *is)
     //if (!is->width)
     //    video_open(is);
 
+    frame_t *vp;
+    SDL_Rect rect;
+
+    vp = frame_queue_peek_last(&is->video_frm_queue);
+
     SDL_SetRenderDrawColor(is->sdl_video.renderer, 0, 0, 0, 255);
     SDL_RenderClear(is->sdl_video.renderer);
     video_image_display(is);
+
+
+    static int upload_texture(SDL_Texture **tex, AVFrame *frame, struct SwsContext **img_convert_ctx) {
+        int ret = 0;
+        Uint32 sdl_pix_fmt;
+        SDL_BlendMode sdl_blendmode;
+        get_sdl_pix_fmt_and_blendmode(frame->format, &sdl_pix_fmt, &sdl_blendmode);
+        if (realloc_texture(tex, sdl_pix_fmt == SDL_PIXELFORMAT_UNKNOWN ? SDL_PIXELFORMAT_ARGB8888 : sdl_pix_fmt, frame->width, frame->height, sdl_blendmode, 0) < 0)
+            return -1;
+        switch (sdl_pix_fmt) {
+            case SDL_PIXELFORMAT_UNKNOWN:
+                /* This should only happen if we are not using avfilter... */
+                *img_convert_ctx = sws_getCachedContext(*img_convert_ctx,
+                    frame->width, frame->height, frame->format, frame->width, frame->height,
+                    AV_PIX_FMT_BGRA, sws_flags, NULL, NULL, NULL);
+                if (*img_convert_ctx != NULL) {
+                    uint8_t *pixels[4];
+                    int pitch[4];
+                    if (!SDL_LockTexture(*tex, NULL, (void **)pixels, pitch)) {
+                        sws_scale(*img_convert_ctx, (const uint8_t * const *)frame->data, frame->linesize,
+                                  0, frame->height, pixels, pitch);
+                        SDL_UnlockTexture(*tex);
+                    }
+                } else {
+                    av_log(NULL, AV_LOG_FATAL, "Cannot initialize the conversion context\n");
+                    ret = -1;
+                }
+                break;
+            case SDL_PIXELFORMAT_IYUV:
+                if (frame->linesize[0] > 0 && frame->linesize[1] > 0 && frame->linesize[2] > 0) {
+                    ret = SDL_UpdateYUVTexture(*tex, NULL, frame->data[0], frame->linesize[0],
+                                                           frame->data[1], frame->linesize[1],
+                                                           frame->data[2], frame->linesize[2]);
+                } else if (frame->linesize[0] < 0 && frame->linesize[1] < 0 && frame->linesize[2] < 0) {
+                    ret = SDL_UpdateYUVTexture(*tex, NULL, frame->data[0] + frame->linesize[0] * (frame->height                    - 1), -frame->linesize[0],
+                                                           frame->data[1] + frame->linesize[1] * (AV_CEIL_RSHIFT(frame->height, 1) - 1), -frame->linesize[1],
+                                                           frame->data[2] + frame->linesize[2] * (AV_CEIL_RSHIFT(frame->height, 1) - 1), -frame->linesize[2]);
+                } else {
+                    av_log(NULL, AV_LOG_ERROR, "Mixed negative and positive linesizes are not supported.\n");
+                    return -1;
+                }
+                break;
+            default:
+                if (frame->linesize[0] < 0) {
+                    ret = SDL_UpdateTexture(*tex, NULL, frame->data[0] + frame->linesize[0] * (frame->height - 1), -frame->linesize[0]);
+                } else {
+                    ret = SDL_UpdateTexture(*tex, NULL, frame->data[0], frame->linesize[0]);
+                }
+                break;
+        }
+        return ret;
+    }
+
+    
+
+
+
+    
     SDL_RenderPresent(is->sdl_video.renderer);
 }
 

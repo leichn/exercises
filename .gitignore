@@ -260,7 +260,8 @@ paket-files/
 __pycache__/
 *.pyc
 
+*.o
 *.si4project
 *.vscode
 *.code-workspace
-
+ffplayer

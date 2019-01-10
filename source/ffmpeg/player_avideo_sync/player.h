@@ -87,9 +87,11 @@ typedef struct {
     frame_queue_t audio_frm_queue;
     frame_queue_t video_frm_queue;
 
+    struct SwsContext *img_convert_ctx;
+    struct SwrContext *audio_swr_ctx;
+
     audio_param_t audio_param_src;
     audio_param_t audio_param_tgt;
-    struct SwrContext *swr_ctx;
     int audio_hw_buf_size;          // SDL音频缓冲区大小(单位字节)
     uint8_t *audio_buf;             // 指向待播放的一帧音频数据，指向的数据区将被拷入SDL音频缓冲区。若经过重采样则指向audio_buf1，否则指向frame中的音频
     uint8_t *audio_buf1;            // 音频重采样的输出缓冲区
