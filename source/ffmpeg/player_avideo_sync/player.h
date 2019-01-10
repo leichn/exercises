@@ -42,8 +42,8 @@ typedef struct {
     AVFormatContext *ic;
     int realtime;
 
-    clock_t audclk;                   // 音频时钟
-    clock_t vidclk;                   // 视频时钟
+    clock_t audio_clk;                   // 音频时钟
+    clock_t video_clk;                   // 视频时钟
     clock_t extclk;                   // 外部时钟
 
     frame_queue_t picq;             // 视频frame队列
@@ -106,17 +106,56 @@ typedef struct {
     SDL_cond *continue_read_thread;
 }player_stat_t;
 #else
+
 typedef struct {
+    int freq;
+    int channels;
+    int64_t channel_layout;
+    enum AVSampleFormat fmt;
+    int frame_size;
+    int bytes_per_sec;
+}   audio_param_t;
 
-    clock_t audclk;                   // 音频时钟
-    clock_t vidclk;                   // 视频时钟
-    clock_t extclk;                   // 外部时钟
+typedef struct {
+    SDL_Window* screen; 
+    SDL_Renderer* renderer;
+    SDL_Texture* texture;
+    SDL_Rect rect;
+}   sdl_video_t;
 
-    packet_queue_t aud_pkt_q;
-    packet_queue_t vid_pkt_q;
-    frame_queue_t aud_frm_q;
-    frame_queue_t vid_frm_q;
-}player_stat_t;
+typedef struct {
+    AVFormatContext *p_fmt_ctx;
+    AVStream *p_audio_stream;
+    AVStream *p_video_stream;
+    AVCodecCtx *p_audio_codec_ctx;
+    AVCodecCtx *p_video_codec_ctx;
+
+    int aud_idx;
+    int vid_idx;
+    sdl_video_t sdl_video;
+
+    clock_t audio_clk;                   // 音频时钟
+    clock_t video_clk;                   // 视频时钟
+    double frame_timer;
+
+    packet_queue_t audio_pkt_queue;
+    packet_queue_t video_pkt_queue;
+    frame_queue_t audio_frm_queue;
+    frame_queue_t video_frm_queue;
+
+    audio_param_t audio_param_src;
+    audio_param_t audio_param_tgt;
+    struct SwrContext *p_audio_swr_ctx;
+    uint8_t *audio_buf;             // 指向待播放的一帧音频数据，指向的数据区将被拷入SDL音频缓冲区。若经过重采样则指向audio_buf1，否则指向frame中的音频
+    uint8_t *audio_buf1;            // 音频重采样的输出缓冲区
+    unsigned int audio_buf_size; /* in bytes */ // 待播放的一帧音频数据(audio_buf指向)的大小
+    unsigned int audio_buf1_size;   // 申请到的音频缓冲区audio_buf1的实际尺寸
+    int audio_buf_index; /* in bytes */ // 当前音频帧中已拷入SDL音频缓冲区的位置索引(指向第一个待拷贝字节)
+    int audio_write_buf_size;       // 当前音频帧中尚未拷入SDL音频缓冲区的数据量，audio_buf_size = audio_buf_index + audio_write_buf_size
+    
+    int abort_request;
+
+}   player_stat_t;
 #endif
 
 int player_running(const char *p_input_file);

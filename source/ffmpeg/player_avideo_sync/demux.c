@@ -7,15 +7,14 @@ static int decode_interrupt_cb(void *ctx)
     return is->abort_request;
 }
 
-int demux_init(const char *p_input_file, player_demux_t *demux)
+int demux_init(player_stat_t *is)
 {
-    player_stat_t *is = arg;
-    AVFormatContext *ic = NULL;
+    AVFormatContext *p_fmt_ctx = NULL;
     int err, i, ret;
     int a_idx;
     int v_idx;
 
-    ic = avformat_alloc_context();
+    p_fmt_ctx = avformat_alloc_context();
     if (!ic)
     {
         printf("Could not allocate context.\n");
@@ -29,19 +28,19 @@ int demux_init(const char *p_input_file, player_demux_t *demux)
 
     // 1. 构建AVFormatContext
     // 1.1 打开视频文件：读取文件头，将文件格式信息存储在"fmt context"中
-    err = avformat_open_input(&ic, is->filename, NULL, NULL);
+    err = avformat_open_input(&p_fmt_ctx, is->filename, NULL, NULL);
     if (err < 0)
     {
         printf("avformat_open_input() failed %d\n", err);
         ret = -1;
         goto fail;
     }
-    demux->ic = ic;
+    is->p_fmt_ctx = p_fmt_ctx;
 
     // 1.2 搜索流信息：读取一段视频文件数据，尝试解码，将取到的流信息填入p_fmt_ctx->streams
     //     ic->streams是一个指针数组，数组大小是pFormatCtx->nb_streams
-    ret = avformat_find_stream_info(ic, NULL);
-    if (ret < 0)
+    err = avformat_find_stream_info(p_fmt_ctx, NULL);
+    if (err < 0)
     {
         printf("avformat_find_stream_info() failed %d\n", err);
         ret = -1;
@@ -51,23 +50,19 @@ int demux_init(const char *p_input_file, player_demux_t *demux)
     // 2. 查找第一个音频流/视频流
     a_idx = -1;
     v_idx = -1;
-    for (i=0; i<ic->nb_streams; i++)
+    for (i=0; i<p_fmt_ctx->nb_streams; i++)
     {
-        if ((ic->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) &&
+        if ((p_fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) &&
             (a_idx == -1))
         {
             a_idx = i;
             printf("Find a audio stream, index %d\n", a_idx);
-            // 3. 打开音频流
-            open_audio_stream(ic, a_idx);
         }
-        if ((ic->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) &&
+        if ((p_fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) &&
             (v_idx == -1))
         {
             v_idx = i;
             printf("Find a video stream, index %d\n", v_idx);
-            // 3. 打开视频流
-            open_video_stream(ic, v_idx);
         }
         if (a_idx != -1 && v_idx != -1)
         {
@@ -79,16 +74,17 @@ int demux_init(const char *p_input_file, player_demux_t *demux)
         printf("Cann't find any audio/video stream\n");
         ret = -1;
  fail:
-        if (ic && !demux->ic)
+        if (p_fmt_ctx != NULL)
         {
-            avformat_close_input(&ic);
+            avformat_close_input(&p_fmt_ctx);
         }
-
         return ret;
     }
 
-    demux->aud_idx = a_idx;
-    demux->vid_idx = v_idx;
+    is->aud_idx = a_idx;
+    is->vid_idx = v_idx;
+    is->p_aud_stream = p_fmt_ctx->streams[a_idx];
+    is->p_vid_stream = p_fmt_ctx->streams[v_idx];
 
     return 0;
 }
@@ -102,8 +98,8 @@ int demux_deinit()
 /* this thread gets the stream from the disk or the network */
 int demux_thread(void *arg)
 {
-    player_demux_t *is = (player_demux_t *)arg;
-    AVFormatContext *ic = NULL;
+    player_stat_t *is = (player_stat_t *)arg;
+    AVFormatContext *p_fmt_ctx = is->p_fmt_ctx;
     int err, i, ret;
     AVPacket pkt1, *pkt = &pkt1;
 
@@ -129,7 +125,7 @@ int demux_thread(void *arg)
 #endif
 
         // 4.1 从输入文件中读取一个packet
-        ret = av_read_frame(is->p_ic, pkt);
+        ret = av_read_frame(is->p_fmt_ctx, pkt);
         if (ret < 0)
         {
             if ((ret == AVERROR_EOF || avio_feof(ic->pb)) && !is->eof)
@@ -137,11 +133,11 @@ int demux_thread(void *arg)
                 // 输入文件已读完，则往packet队列中发送NULL packet，以冲洗(flush)解码器，否则解码器中缓存的帧取不出来
                 if (is->video_stream >= 0)
                 {
-                    packet_queue_put_nullpacket(is->p_vid_pkt_q, is->vid_idx);
+                    packet_queue_put_nullpacket(is->p_video_pkt_queue, is->vid_idx);
                 }
                 if (is->audio_stream >= 0)
                 {
-                    packet_queue_put_nullpacket(is->p_aud_pkt_q, is->aud_idx);
+                    packet_queue_put_nullpacket(is->p_audio_pkt_queue, is->aud_idx);
                 }
                 is->eof = 1;
             }
@@ -159,11 +155,11 @@ int demux_thread(void *arg)
         // 4.3 根据当前packet类型(音频、视频、字幕)，将其存入对应的packet队列
         if (pkt->stream_index == is->aud_idx)
         {
-            packet_queue_put(&is->p_aud_pkt_q, pkt);
+            packet_queue_put(&is->p_audio_pkt_queue, pkt);
         }
         else if (pkt->stream_index == is->vid_idx)
         {
-            packet_queue_put(&is->p_vid_pkt_q, pkt);
+            packet_queue_put(&is->p_video_pkt_queue, pkt);
         }
         else
         {
@@ -186,15 +182,15 @@ int demux_thread(void *arg)
 }
 
 
-int open_demux(const char *p_input_file, player_demux_t *demux)
+int open_demux(player_stat_t *is)
 {
-    if (demux_init(p_input_file, demux) != 0)
+    if (demux_init(is) != 0)
     {
         printf("demux_init() failed\n");
         return -1;
     }
 
-    SDL_Thread *tid = SDL_CreateThread(demux_thread, "demux_thread", demux);
+    SDL_Thread *tid = SDL_CreateThread(demux_thread, "demux_thread", is);
     if (tid == NULL)
     {
         printf("SDL_CreateThread() failed: %s\n", SDL_GetError());

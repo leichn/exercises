@@ -1,39 +1,13 @@
 #include "video.h"
 #include "packet.h"
 #include "frame.h"
-
-typedef struct {
-    SDL_Window* screen; 
-    SDL_Renderer* renderer;
-    SDL_Texture* texture;
-    SDL_Rect rect;
-    SDL_Thread* thread;
-    SDL_Event event;
-}   sdl_video_t;
-
-typedef struct {
-    AVFormatContext *p_fmt_ctx;
-    AVStream *p_stream;
-    AVCodecContext *p_codec_ctx;
-    packet_queue_t *p_pkt_queue;
-    frame_queue_t *p_frm_queue;
-    
-    double frame_timer;             // 记录最后一帧播放的时刻
-    sdl_video_t sdl;
-}   player_video_t;
-
-static player_video_t s_video_stat;
-
-int video_init_decode()
-{
-
-}
+#include "player.h"
 
 static int queue_picture(player_stat_t *is, AVFrame *src_frame, double pts, double duration, int64_t pos)
 {
     frame_t *vp;
 
-    if (!(vp = frame_queue_peek_writable(is->p_frm_queue)))
+    if (!(vp = frame_queue_peek_writable(is->p_video_frm_queue)))
         return -1;
 
     vp->sar = src_frame->sample_aspect_ratio;
@@ -53,13 +27,13 @@ static int queue_picture(player_stat_t *is, AVFrame *src_frame, double pts, doub
     // 将AVFrame拷入队列相应位置
     av_frame_move_ref(vp->frame, src_frame);
     // 更新队列计数及写索引
-    frame_queue_push(is->p_frm_queue);
+    frame_queue_push(is->p_video_frm_queue);
     return 0;
 }
 
 
 // 从packet_queue中取一个packet，解码生成frame
-static int video_decode_frame(AVCodecContext *p_codec_ctx, AVFrame *frame)
+static int video_decode_frame(AVCodecContext *p_codec_ctx, p_video_pkt_queue_t *p_pkt_queue, AVFrame *frame)
 {
     int ret;
     
@@ -93,8 +67,8 @@ static int video_decode_frame(AVCodecContext *p_codec_ctx, AVFrame *frame)
                 }
                 else
                 {
-                    printf("video avcodec_send_packet(): legitimate decoding errors\n");
-                    return -1;
+                    printf("video avcodec_send_packet(): other errors\n");
+                    continue;
                 }
             }
             else
@@ -107,7 +81,7 @@ static int video_decode_frame(AVCodecContext *p_codec_ctx, AVFrame *frame)
         }
 
         // 1. 取出一个packet。使用pkt对应的serial赋值给d->pkt_serial
-        if (packet_queue_get(p_codec_ctx, &pkt, true) < 0)
+        if (packet_queue_get(p_pkt_queue, &pkt, true) < 0)
         {
             return -1;
         }
@@ -136,14 +110,14 @@ static int video_decode_frame(AVCodecContext *p_codec_ctx, AVFrame *frame)
 // 将视频包解码得到视频帧，然后写入picture队列
 int video_decode_thread(void *arg)
 {
-    player_video_t *is = (player_video_t *)arg;
+    player_stat_t *is = (player_stat_t *)arg;
     AVFrame *p_frame = av_frame_alloc();
     double pts;
     double duration;
     int ret;
     int got_picture;
-    AVRational tb = is->p_stream->time_base;
-    AVRational frame_rate = av_guess_frame_rate(is->p_fmt_ctx, is->p_stream, NULL);
+    AVRational tb = is->p_video_stream->time_base;
+    AVRational frame_rate = av_guess_frame_rate(is->p_fmt_ctx, is->p_video_stream, NULL);
     
     if (p_frame == NULL)
     {
@@ -153,7 +127,7 @@ int video_decode_thread(void *arg)
 
     while (1)
     {
-        got_picture = video_decode_frame(is->p_codec_ctx, is->p_pkt_queue, p_frame)
+        got_picture = video_decode_frame(is->p_video_codec_ctx, is->p_video_pkt_queue, p_frame);
         if (got_picture < 0)
         {
             goto exit;
@@ -176,18 +150,13 @@ exit:
 
 }
 
-int video_init_playing()
-{
-
-}
-
-static void video_image_display(VideoState *is)
+static void video_image_display(player_stat_t *is)
 {
     Frame *vp;
     Frame *sp = NULL;
     SDL_Rect rect;
 
-    vp = frame_queue_peek_last(is->p_frm_queue);
+    vp = frame_queue_peek_last(is->p_video_frm_queue);
 
     calculate_display_rect(&rect, is->xleft, is->ytop, is->width, is->height, vp->width, vp->height, vp->sar);
 
@@ -217,7 +186,7 @@ static void video_image_display(VideoState *is)
 }
 
 /* display the current picture, if any */
-static void video_display(VideoState *is)
+static void video_display(player_stat_t *is)
 {
     if (!is->width)
         video_open(is);
@@ -237,7 +206,7 @@ static void video_refresh(void *opaque, double *remaining_time)
     frame_t *sp, *sp2;
 
 retry:
-    if (frame_queue_nb_remaining(is->p_frm_queue) == 0)  // 所有帧已显示
+    if (frame_queue_nb_remaining(is->p_video_frm_queue) == 0)  // 所有帧已显示
     {    
         // nothing to do, no picture to display in the queue
         return;
@@ -247,11 +216,11 @@ retry:
     frame_t *vp, *lastvp;
 
     /* dequeue the picture */
-    lastvp = frame_queue_peek_last(is->p_frm_queue);     // 上一帧：上次已显示的帧
-    vp = frame_queue_peek(&is->p_frm_queue);              // 当前帧：当前待显示的帧
+    lastvp = frame_queue_peek_last(is->p_video_frm_queue);     // 上一帧：上次已显示的帧
+    vp = frame_queue_peek(&is->p_video_frm_queue);              // 当前帧：当前待显示的帧
 
     if (vp->serial != is->videoq.serial) {
-        frame_queue_next(is->p_frm_queue);
+        frame_queue_next(is->p_video_frm_queue);
         goto retry;
     }
 
@@ -278,26 +247,26 @@ retry:
     if (delay > 0 && time - is->frame_timer > AV_SYNC_THRESHOLD_MAX)
         is->frame_timer = time;
 
-    SDL_LockMutex(is->p_frm_queue->mutex);
+    SDL_LockMutex(is->p_video_frm_queue->mutex);
     if (!isnan(vp->pts))
         update_video_pts(is, vp->pts, vp->pos, vp->serial); // 更新视频时钟：时间戳、时钟时间
-    SDL_UnlockMutex(is->p_frm_queue->mutex);
+    SDL_UnlockMutex(is->p_video_frm_queue->mutex);
 
     // 是否要丢弃未能及时播放的视频帧
-    if (frame_queue_nb_remaining(is->p_frm_queue) > 1)  // 队列中未显示帧数>1(只有一帧则不考虑丢帧)
+    if (frame_queue_nb_remaining(is->p_video_frm_queue) > 1)  // 队列中未显示帧数>1(只有一帧则不考虑丢帧)
     {         
-        frame_t *nextvp = frame_queue_peek_next(is->p_frm_queue);  // 下一帧：下一待显示的帧
+        frame_t *nextvp = frame_queue_peek_next(is->p_video_frm_queue);  // 下一帧：下一待显示的帧
         duration = vp_duration(is, vp, nextvp);             // 当前帧vp播放时长 = nextvp->pts - vp->pts
         // 当前帧vp未能及时播放，即下一帧播放时刻(is->frame_timer+duration)小于当前系统时刻(time)
         if (time > is->frame_timer + duration)
         {
-            frame_queue_next(is->p_frm_queue);   // 删除上一帧已显示帧，即删除lastvp，读指针加1(从lastvp更新到vp)
+            frame_queue_next(is->p_video_frm_queue);   // 删除上一帧已显示帧，即删除lastvp，读指针加1(从lastvp更新到vp)
             goto retry;
         }
     }
 
     // 删除当前读指针元素，读指针+1。若未丢帧，读指针从lastvp更新到vp；若有丢帧，读指针从vp更新到nextvp
-    frame_queue_next(is->p_frm_queue);
+    frame_queue_next(is->p_video_frm_queue);
 
 display:
     /* display picture */
@@ -308,54 +277,6 @@ display:
 static void video_playing_thread(void *arg)
 {
     double remaining_time = 0.0;
-    sdl_video_t sdl;
-
-    // 1. 创建SDL窗口，SDL 2.0支持多窗口
-    //    SDL_Window即运行程序后弹出的视频窗口，同SDL 1.x中的SDL_Surface
-    sdl.screen = SDL_CreateWindow("simple ffplayer", 
-                              SDL_WINDOWPOS_UNDEFINED,// 不关心窗口X坐标
-                              SDL_WINDOWPOS_UNDEFINED,// 不关心窗口Y坐标
-                              p_codec_ctx->width, 
-                              p_codec_ctx->height,
-                              SDL_WINDOW_OPENGL
-                              );
-    if (sdl.screen == NULL)
-    {  
-        printf("SDL_CreateWindow() failed: %s\n", SDL_GetError());  
-        res = -1;
-        goto exit5;
-    }
-
-    // 2. 创建SDL_Renderer
-    //    SDL_Renderer：渲染器
-    sdl.renderer = SDL_CreateRenderer(sdl.screen, -1, 0);
-    if (sdl.renderer == NULL)
-    {  
-        printf("SDL_CreateRenderer() failed: %s\n", SDL_GetError());  
-        res = -1;
-        goto exit5;
-    }
-
-    // B3. 创建SDL_Texture
-    //     一个SDL_Texture对应一帧YUV数据，同SDL 1.x中的SDL_Overlay
-    sdl.texture = SDL_CreateTexture(sdl.renderer, 
-                                    SDL_PIXELFORMAT_IYUV, 
-                                    SDL_TEXTUREACCESS_STREAMING,
-                                    p_codec_ctx->width,
-                                    p_codec_ctx->height
-                                    );
-    if (sdl.texture == NULL)
-    {  
-        printf("SDL_CreateTexture() failed: %s\n", SDL_GetError());  
-        res = -1;
-        goto exit5;
-    }
-
-    // B4. SDL_Rect赋值
-    sdl.rect.x = 0;
-    sdl.rect.y = 0;
-    sdl.rect.w = p_codec_ctx->width;
-    sdl.rect.h = p_codec_ctx->height;
 
     while (1)
     {
@@ -369,11 +290,67 @@ static void video_playing_thread(void *arg)
     }
 }
 
+static void open_video_playing(void *arg)
+{
+    double remaining_time = 0.0;
+    player_stat_t *is = (player_stat_t *)arg;
+
+    // 1. 创建SDL窗口，SDL 2.0支持多窗口
+    //    SDL_Window即运行程序后弹出的视频窗口，同SDL 1.x中的SDL_Surface
+    is->sdl.screen = SDL_CreateWindow("simple ffplayer", 
+                              SDL_WINDOWPOS_UNDEFINED,// 不关心窗口X坐标
+                              SDL_WINDOWPOS_UNDEFINED,// 不关心窗口Y坐标
+                              p_codec_ctx->width, 
+                              p_codec_ctx->height,
+                              SDL_WINDOW_OPENGL
+                              );
+    if (is->sdl.screen == NULL)
+    {  
+        printf("SDL_CreateWindow() failed: %s\n", SDL_GetError());  
+        res = -1;
+        goto exit5;
+    }
+
+    // 2. 创建SDL_Renderer
+    //    SDL_Renderer：渲染器
+    is->sdl.renderer = SDL_CreateRenderer(is->sdl.screen, -1, 0);
+    if (is->sdl.renderer == NULL)
+    {  
+        printf("SDL_CreateRenderer() failed: %s\n", SDL_GetError());  
+        res = -1;
+        goto exit5;
+    }
+
+    // B3. 创建SDL_Texture
+    //     一个SDL_Texture对应一帧YUV数据，同SDL 1.x中的SDL_Overlay
+   is->sdl.texture = SDL_CreateTexture(is->sdl.renderer, 
+                                    SDL_PIXELFORMAT_IYUV, 
+                                    SDL_TEXTUREACCESS_STREAMING,
+                                    p_codec_ctx->width,
+                                    p_codec_ctx->height
+                                    );
+    if (is->sdl.texture == NULL)
+    {  
+        printf("SDL_CreateTexture() failed: %s\n", SDL_GetError());  
+        res = -1;
+        goto exit5;
+    }
+
+    // B4. SDL_Rect赋值
+    is->sdl.rect.x = 0;
+    is->sdl.rect.y = 0;
+    is->sdl.rect.w = p_codec_ctx->width;
+    is->sdl.rect.h = p_codec_ctx->height;
+
+   SDL_CreateThread(video_playing_thread, "video playing thread", is);
+}
+
 int open_video_stream(const AVStream* p_stream)
 {
     AVCodecParameters* p_codec_par = NULL;
     AVCodec* p_codec = NULL;
     AVCodecContext* p_codec_ctx = NULL;
+    AVStream *p_stream = is->p_video_stream;
     int ret;
 
     // 1. 为视频流构建解码器AVCodecContext
@@ -420,18 +397,17 @@ int open_video_stream(const AVStream* p_stream)
     printf("frame rate %d FPS, refresh interval %d ms\n", frame_rate, interval);
     #endif
 
+    is->p_video_codec_ctx = p_codec_ctx;
     // 2. 创建视频解码线程
-    SDL_CreateThread(video_decode_thread, "video decode thread", p_codec_ctx);
+    SDL_CreateThread(video_decode_thread, "video decode thread", is);
 
     return 0;
 }
 
 int open_video(player_stat_t *is)
 {
-    s_video_stat.p_fmt_ctx = is->
-    open_video_stream(p_stream);
+    open_video_stream(is);
     open_video_playing();
 
     return 0;
 }
-
