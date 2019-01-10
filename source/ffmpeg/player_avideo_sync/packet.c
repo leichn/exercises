@@ -1,10 +1,24 @@
+#include "packet.h"
 
-void packet_queue_init(packet_queue_t *q)
+int packet_queue_init(packet_queue_t *q)
 {
     memset(q, 0, sizeof(packet_queue_t));
     q->mutex = SDL_CreateMutex();
+    if (!q->mutex)
+    {
+        printf("SDL_CreateMutex(): %s\n", SDL_GetError());
+        return AVERROR(ENOMEM);
+    }
     q->cond = SDL_CreateCond();
+    if (!q->cond)
+    {
+        printf("SDL_CreateCond(): %s\n", SDL_GetError());
+        return AVERROR(ENOMEM);
+    }
+    q->abort_request = 1;
+    return 0;
 }
+
 
 // 写队列尾部。pkt是一包还未解码的音频数据
 int packet_queue_put(packet_queue_t *q, AVPacket *pkt)

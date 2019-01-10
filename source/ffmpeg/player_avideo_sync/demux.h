@@ -3,4 +3,6 @@
 
 #include "player.h"
 
+int open_demux(player_stat_t *is);
+
 #endif

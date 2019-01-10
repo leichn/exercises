@@ -7,7 +7,7 @@ static int decode_interrupt_cb(void *ctx)
     return is->abort_request;
 }
 
-int demux_init(player_stat_t *is)
+static int demux_init(player_stat_t *is)
 {
     AVFormatContext *p_fmt_ctx = NULL;
     int err, i, ret;
@@ -15,7 +15,7 @@ int demux_init(player_stat_t *is)
     int v_idx;
 
     p_fmt_ctx = avformat_alloc_context();
-    if (!ic)
+    if (!p_fmt_ctx)
     {
         printf("Could not allocate context.\n");
         ret = AVERROR(ENOMEM);
@@ -23,8 +23,8 @@ int demux_init(player_stat_t *is)
     }
 
     // 中断回调机制。为底层I/O层提供一个处理接口，比如中止IO操作。
-    ic->interrupt_callback.callback = decode_interrupt_cb;
-    ic->interrupt_callback.opaque = is;
+    p_fmt_ctx->interrupt_callback.callback = decode_interrupt_cb;
+    p_fmt_ctx->interrupt_callback.opaque = is;
 
     // 1. 构建AVFormatContext
     // 1.1 打开视频文件：读取文件头，将文件格式信息存储在"fmt context"中
@@ -81,10 +81,10 @@ int demux_init(player_stat_t *is)
         return ret;
     }
 
-    is->aud_idx = a_idx;
-    is->vid_idx = v_idx;
-    is->p_aud_stream = p_fmt_ctx->streams[a_idx];
-    is->p_vid_stream = p_fmt_ctx->streams[v_idx];
+    is->audio_idx = a_idx;
+    is->video_idx = v_idx;
+    is->p_audio_stream = p_fmt_ctx->streams[a_idx];
+    is->p_video_stream = p_fmt_ctx->streams[v_idx];
 
     return 0;
 }
@@ -94,9 +94,8 @@ int demux_deinit()
 
 }
 
-
 /* this thread gets the stream from the disk or the network */
-int demux_thread(void *arg)
+static int demux_thread(void *arg)
 {
     player_stat_t *is = (player_stat_t *)arg;
     AVFormatContext *p_fmt_ctx = is->p_fmt_ctx;
@@ -107,7 +106,8 @@ int demux_thread(void *arg)
     int64_t pkt_ts;
 
     // 4. 解复用处理
-    for (;;) {
+    for (;;)
+    {
 
 #if 0
         /* if the queue are full, no need to read more */
@@ -128,18 +128,17 @@ int demux_thread(void *arg)
         ret = av_read_frame(is->p_fmt_ctx, pkt);
         if (ret < 0)
         {
-            if ((ret == AVERROR_EOF || avio_feof(ic->pb)) && !is->eof)
+            if ((ret == AVERROR_EOF))// || avio_feof(ic->pb)) && !is->eof)
             {
                 // 输入文件已读完，则往packet队列中发送NULL packet，以冲洗(flush)解码器，否则解码器中缓存的帧取不出来
-                if (is->video_stream >= 0)
+                if (is->video_idx >= 0)
                 {
-                    packet_queue_put_nullpacket(is->p_video_pkt_queue, is->vid_idx);
+                    packet_queue_put_nullpacket(&is->video_pkt_queue, is->video_idx);
                 }
-                if (is->audio_stream >= 0)
+                if (is->audio_idx >= 0)
                 {
-                    packet_queue_put_nullpacket(is->p_audio_pkt_queue, is->aud_idx);
+                    packet_queue_put_nullpacket(&is->audio_pkt_queue, is->audio_idx);
                 }
-                is->eof = 1;
             }
 
             SDL_LockMutex(wait_mutex);
@@ -147,19 +146,15 @@ int demux_thread(void *arg)
             SDL_UnlockMutex(wait_mutex);
             continue;
         }
-        else
-        {
-            is->eof = 0;
-        }
         
         // 4.3 根据当前packet类型(音频、视频、字幕)，将其存入对应的packet队列
-        if (pkt->stream_index == is->aud_idx)
+        if (pkt->stream_index == is->audio_idx)
         {
-            packet_queue_put(&is->p_audio_pkt_queue, pkt);
+            packet_queue_put(&is->audio_pkt_queue, pkt);
         }
-        else if (pkt->stream_index == is->vid_idx)
+        else if (pkt->stream_index == is->video_idx)
         {
-            packet_queue_put(&is->p_video_pkt_queue, pkt);
+            packet_queue_put(&is->video_pkt_queue, pkt);
         }
         else
         {
@@ -180,7 +175,6 @@ int demux_thread(void *arg)
     SDL_DestroyMutex(wait_mutex);
     return 0;
 }
-
 
 int open_demux(player_stat_t *is)
 {
