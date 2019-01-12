@@ -220,6 +220,11 @@ int main(int argc, char *argv[])
     }
 
     // A7. 初始化SWS context，用于后续图像转换
+    //     此处第6个参数使用的是FFmpeg中的像素格式，对比参考注释B4
+    //     FFmpeg中的像素格式AV_PIX_FMT_YUV420P对应SDL中的像素格式SDL_PIXELFORMAT_IYUV
+    //     如果解码后得到图像的不被SDL支持，不进行图像转换的话，SDL是无法正常显示图像的
+    //     如果解码后得到图像的能被SDL支持，则不必进行图像转换
+    //     这里为了编码简便，统一转换为SDL支持的格式AV_PIX_FMT_YUV420P==>SDL_PIXELFORMAT_IYUV
     sws_ctx = sws_getContext(p_codec_ctx->width,    // src width
                              p_codec_ctx->height,   // src height
                              p_codec_ctx->pix_fmt,  // src format
@@ -275,6 +280,8 @@ int main(int argc, char *argv[])
 
     // B4. 创建SDL_Texture
     //     一个SDL_Texture对应一帧YUV数据，同SDL 1.x中的SDL_Overlay
+    //     此处第2个参数使用的是SDL中的像素格式，对比参考注释A7
+    //     FFmpeg中的像素格式AV_PIX_FMT_YUV420P对应SDL中的像素格式SDL_PIXELFORMAT_IYUV
     sdl_texture = SDL_CreateTexture(sdl_renderer, 
                                     SDL_PIXELFORMAT_IYUV, 
                                     SDL_TEXTUREACCESS_STREAMING,
@@ -352,7 +359,7 @@ int main(int argc, char *argv[])
                 {
                     printf("avcodec_receive_frame(): output is not available in this state - "
                             "user must try to send new input\n");
-					continue;
+                    continue;
                 }
                 else if (ret == AVERROR(EINVAL))
                 {
