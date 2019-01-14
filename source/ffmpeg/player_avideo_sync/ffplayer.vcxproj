@@ -22,7 +22,7 @@
     <VCProjectVersion>15.0</VCProjectVersion>
     <ProjectGuid>{73BECF10-A10E-4925-9AC3-0AC6BBB14A13}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
-    <RootNamespace>ffplayvc</RootNamespace>
+    <RootNamespace>ffplayervc</RootNamespace>
     <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -159,11 +159,21 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="cmdutils.c" />
-    <ClCompile Include="ffplay.c" />
+    <ClCompile Include="audio.c" />
+    <ClCompile Include="demux.c" />
+    <ClCompile Include="frame.c" />
+    <ClCompile Include="main.c" />
+    <ClCompile Include="packet.c" />
+    <ClCompile Include="player.c" />
+    <ClCompile Include="video.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="config.h" />
+    <ClInclude Include="audio.h" />
+    <ClInclude Include="demux.h" />
+    <ClInclude Include="frame.h" />
+    <ClInclude Include="packet.h" />
+    <ClInclude Include="player.h" />
+    <ClInclude Include="video.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

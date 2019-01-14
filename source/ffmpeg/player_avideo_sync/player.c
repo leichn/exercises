@@ -1,4 +1,4 @@
-/*******************************************************************************
+﻿/*******************************************************************************
  * player.c
  *
  * history:
@@ -22,9 +22,16 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <assert.h>
-#include <sys/time.h>
 
 #include "player.h"
+#include "frame.h"
+#include "packet.h"
+#include "demux.h"
+#include "video.h"
+#include "audio.h"
+
+static player_stat_t *player_init(const char *p_input_file);
+static int player_deinit(player_stat_t *is);
 
 // 返回值：如果按正常速度播放，则返回上一帧的pts；若是快进或快退播放，则返回上一帧的pts经校正后的值
 double get_clock(play_clock_t *c)
@@ -135,13 +142,15 @@ fail:
     init_clock(&is->video_clk, &is->video_pkt_queue.serial);
     init_clock(&is->audio_clk, &is->audio_pkt_queue.serial);
 
+    is->abort_request = 0;
+
     return is;
 }
 
 
-int player_deinit(player_stat_t *is)
+static int player_deinit(player_stat_t *is)
 {
-
+    return 0;
 }
 
 
@@ -158,11 +167,6 @@ int player_running(const char *p_input_file)
 
     open_demux(is);
     open_video(is);
-
-    while (1)
-    {
-
-    }
 
     return 0;
 }

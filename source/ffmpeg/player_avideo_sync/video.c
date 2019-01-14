@@ -1,4 +1,4 @@
-#include "video.h"
+﻿#include "video.h"
 #include "packet.h"
 #include "frame.h"
 #include "player.h"
@@ -56,18 +56,19 @@ static int video_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
             {
                 if (ret == AVERROR_EOF)
                 {
-                    printf("video avcodec_send_packet(): the decoder has been flushed\n");
+                    printf("video avcodec_receive_frame(): the decoder has been fully flushed\n");
                     avcodec_flush_buffers(p_codec_ctx);
                     return 0;
                 }
                 else if (ret == AVERROR(EAGAIN))
                 {
-                    printf("video avcodec_send_packet(): input is not accepted in the current state\n");
+                    printf("video avcodec_receive_frame(): output is not available in this state - "
+                            "user must try to send new input\n");
                     break;
                 }
                 else
                 {
-                    printf("video avcodec_send_packet(): other errors\n");
+                    printf("video avcodec_receive_frame(): other errors\n");
                     continue;
                 }
             }
@@ -99,7 +100,7 @@ static int video_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
             //    pkt.pos变量可以标识当前packet在视频文件中的地址偏移
             if (avcodec_send_packet(p_codec_ctx, &pkt) == AVERROR(EAGAIN))
             {
-                printf("Receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
+                printf("receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
             }
 
             av_packet_unref(&pkt);
@@ -127,7 +128,7 @@ static int video_decode_thread(void *arg)
 
     while (1)
     {
-        got_picture = video_decode_frame(is->p_video_codec_ctx, &is->video_pkt_queue, p_frame);
+        got_picture = video_decode_frame(is->p_vcodec_ctx, &is->video_pkt_queue, p_frame);
         if (got_picture < 0)
         {
             goto exit;
@@ -150,29 +151,6 @@ exit:
 
     return 0;
 }
-
-static void video_image_display(player_stat_t *is)
-{
-    frame_t *vp;
-    frame_t *sp = NULL;
-    SDL_Rect rect;
-
-    vp = frame_queue_peek_last(&is->video_frm_queue);
-
-    //-calculate_display_rect(&rect, is->xleft, is->ytop, is->width, is->height, vp->width, vp->height, vp->sar);
-
-    if (!vp->uploaded) {
-        if (upload_texture(&is->vid_texture, vp->frame, &is->img_convert_ctx) < 0)
-            return;
-        vp->uploaded = 1;
-        vp->flip_v = vp->frame->linesize[0] < 0;
-    }
-
-    set_sdl_yuv_conversion_mode(vp->frame);
-    SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
-
-}
-
 
 // 根据视频时钟与同步时钟(如音频时钟)的差值，校正delay值，使视频时钟追赶或等待同步时钟
 // 输入参数delay是上一帧播放时长，即上一帧播放后应延时多长时间后再播放当前帧，通过调节此值来调节当前帧播放快慢
@@ -231,79 +209,49 @@ static void update_video_pts(player_stat_t *is, double pts, int64_t pos, int ser
     //-sync_clock_to_slave(&is->extclk, &is->vidclk);  // 将extclock同步到vidclock
 }
 
-
-/* display the current picture, if any */
 static void video_display(player_stat_t *is)
 {
-    //if (!is->width)
-    //    video_open(is);
-
     frame_t *vp;
-    SDL_Rect rect;
 
     vp = frame_queue_peek_last(&is->video_frm_queue);
 
-    SDL_SetRenderDrawColor(is->sdl_video.renderer, 0, 0, 0, 255);
+    // 图像转换：p_frm_raw->data ==> p_frm_yuv->data
+    // 将源图像中一片连续的区域经过处理后更新到目标图像对应区域，处理的图像区域必须逐行连续
+    // plane: 如YUV有Y、U、V三个plane，RGB有R、G、B三个plane
+    // slice: 图像中一片连续的行，必须是连续的，顺序由顶部到底部或由底部到顶部
+    // stride/pitch: 一行图像所占的字节数，Stride=BytesPerPixel*Width+Padding，注意对齐
+    // AVFrame.*data[]: 每个数组元素指向对应plane
+    // AVFrame.linesize[]: 每个数组元素表示对应plane中一行图像所占的字节数
+    sws_scale(is->img_convert_ctx,                      // sws context
+              (const uint8_t *const *)vp->frame->data,// src slice
+              vp->frame->linesize,                    // src stride
+              0,                                      // src slice y
+              is->p_vcodec_ctx->height,               // src slice height
+              is->p_frm_yuv->data,                    // dst planes
+              is->p_frm_yuv->linesize                 // dst strides
+             );
+    
+    // 使用新的YUV像素数据更新SDL_Rect
+    SDL_UpdateYUVTexture(is->sdl_video.texture,         // sdl texture
+                         &is->sdl_video.rect,           // sdl rect
+                         is->p_frm_yuv->data[0],        // y plane
+                         is->p_frm_yuv->linesize[0],    // y pitch
+                         is->p_frm_yuv->data[1],        // u plane
+                         is->p_frm_yuv->linesize[1],    // u pitch
+                         is->p_frm_yuv->data[2],        // v plane
+                         is->p_frm_yuv->linesize[2]     // v pitch
+                        );
+    
+    // 使用特定颜色清空当前渲染目标
     SDL_RenderClear(is->sdl_video.renderer);
-    video_image_display(is);
-
-
-    static int upload_texture(SDL_Texture **tex, AVFrame *frame, struct SwsContext **img_convert_ctx) {
-        int ret = 0;
-        Uint32 sdl_pix_fmt;
-        SDL_BlendMode sdl_blendmode;
-        get_sdl_pix_fmt_and_blendmode(frame->format, &sdl_pix_fmt, &sdl_blendmode);
-        if (realloc_texture(tex, sdl_pix_fmt == SDL_PIXELFORMAT_UNKNOWN ? SDL_PIXELFORMAT_ARGB8888 : sdl_pix_fmt, frame->width, frame->height, sdl_blendmode, 0) < 0)
-            return -1;
-        switch (sdl_pix_fmt) {
-            case SDL_PIXELFORMAT_UNKNOWN:
-                /* This should only happen if we are not using avfilter... */
-                *img_convert_ctx = sws_getCachedContext(*img_convert_ctx,
-                    frame->width, frame->height, frame->format, frame->width, frame->height,
-                    AV_PIX_FMT_BGRA, sws_flags, NULL, NULL, NULL);
-                if (*img_convert_ctx != NULL) {
-                    uint8_t *pixels[4];
-                    int pitch[4];
-                    if (!SDL_LockTexture(*tex, NULL, (void **)pixels, pitch)) {
-                        sws_scale(*img_convert_ctx, (const uint8_t * const *)frame->data, frame->linesize,
-                                  0, frame->height, pixels, pitch);
-                        SDL_UnlockTexture(*tex);
-                    }
-                } else {
-                    av_log(NULL, AV_LOG_FATAL, "Cannot initialize the conversion context\n");
-                    ret = -1;
-                }
-                break;
-            case SDL_PIXELFORMAT_IYUV:
-                if (frame->linesize[0] > 0 && frame->linesize[1] > 0 && frame->linesize[2] > 0) {
-                    ret = SDL_UpdateYUVTexture(*tex, NULL, frame->data[0], frame->linesize[0],
-                                                           frame->data[1], frame->linesize[1],
-                                                           frame->data[2], frame->linesize[2]);
-                } else if (frame->linesize[0] < 0 && frame->linesize[1] < 0 && frame->linesize[2] < 0) {
-                    ret = SDL_UpdateYUVTexture(*tex, NULL, frame->data[0] + frame->linesize[0] * (frame->height                    - 1), -frame->linesize[0],
-                                                           frame->data[1] + frame->linesize[1] * (AV_CEIL_RSHIFT(frame->height, 1) - 1), -frame->linesize[1],
-                                                           frame->data[2] + frame->linesize[2] * (AV_CEIL_RSHIFT(frame->height, 1) - 1), -frame->linesize[2]);
-                } else {
-                    av_log(NULL, AV_LOG_ERROR, "Mixed negative and positive linesizes are not supported.\n");
-                    return -1;
-                }
-                break;
-            default:
-                if (frame->linesize[0] < 0) {
-                    ret = SDL_UpdateTexture(*tex, NULL, frame->data[0] + frame->linesize[0] * (frame->height - 1), -frame->linesize[0]);
-                } else {
-                    ret = SDL_UpdateTexture(*tex, NULL, frame->data[0], frame->linesize[0]);
-                }
-                break;
-        }
-        return ret;
-    }
-
+    // 使用部分图像数据(texture)更新当前渲染目标
+    SDL_RenderCopy(is->sdl_video.renderer,              // sdl renderer
+                   is->sdl_video.texture,               // sdl texture
+                   NULL,                                // src rect, if NULL copy texture
+                   &is->sdl_video.rect                  // dst rect
+                  );
     
-
-
-
-    
+    // 执行渲染，更新屏幕显示
     SDL_RenderPresent(is->sdl_video.renderer);
 }
 
@@ -312,8 +260,6 @@ static void video_refresh(void *opaque, double *remaining_time)
 {
     player_stat_t *is = (player_stat_t *)opaque;
     double time;
-
-    frame_t *sp, *sp2;
 
 retry:
     if (frame_queue_nb_remaining(&is->video_frm_queue) == 0)  // 所有帧已显示
@@ -409,15 +355,74 @@ static int video_playing_thread(void *arg)
 
 static int open_video_playing(void *arg)
 {
-    double remaining_time = 0.0;
     player_stat_t *is = (player_stat_t *)arg;
+    int ret;
+    int buf_size;
+    uint8_t* buffer = NULL;
 
-    // B4. SDL_Rect赋值
+    is->p_frm_yuv = av_frame_alloc();
+    if (is->p_frm_yuv == NULL)
+    {
+        printf("av_frame_alloc() for p_frm_raw failed\n");
+        return -1;
+    }
+
+    // 为AVFrame.*data[]手工分配缓冲区，用于存储sws_scale()中目的帧视频数据
+    buf_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, 
+                                        is->p_vcodec_ctx->width, 
+                                        is->p_vcodec_ctx->height, 
+                                        1
+                                        );
+    // buffer将作为p_frm_yuv的视频数据缓冲区
+    buffer = (uint8_t *)av_malloc(buf_size);
+    if (buffer == NULL)
+    {
+        printf("av_malloc() for buffer failed\n");
+        return -1;
+    }
+    // 使用给定参数设定p_frm_yuv->data和p_frm_yuv->linesize
+    ret = av_image_fill_arrays(is->p_frm_yuv->data,     // dst data[]
+                               is->p_frm_yuv->linesize, // dst linesize[]
+                               buffer,                  // src buffer
+                               AV_PIX_FMT_YUV420P,      // pixel format
+                               is->p_vcodec_ctx->width, // width
+                               is->p_vcodec_ctx->height,// height
+                               1                        // align
+                               );
+    if (ret < 0)
+    {
+        printf("av_image_fill_arrays() failed %d\n", ret);
+        return -1;;
+    }
+
+    // A2. 初始化SWS context，用于后续图像转换
+    //     此处第6个参数使用的是FFmpeg中的像素格式，对比参考注释B3
+    //     FFmpeg中的像素格式AV_PIX_FMT_YUV420P对应SDL中的像素格式SDL_PIXELFORMAT_IYUV
+    //     如果解码后得到图像的不被SDL支持，不进行图像转换的话，SDL是无法正常显示图像的
+    //     如果解码后得到图像的能被SDL支持，则不必进行图像转换
+    //     这里为了编码简便，统一转换为SDL支持的格式AV_PIX_FMT_YUV420P==>SDL_PIXELFORMAT_IYUV
+    is->img_convert_ctx = sws_getContext(is->p_vcodec_ctx->width,   // src width
+                                         is->p_vcodec_ctx->height,  // src height
+                                         is->p_vcodec_ctx->pix_fmt, // src format
+                                         is->p_vcodec_ctx->width,   // dst width
+                                         is->p_vcodec_ctx->height,  // dst height
+                                         AV_PIX_FMT_YUV420P,        // dst format
+                                         SWS_BICUBIC,               // flags
+                                         NULL,                      // src filter
+                                         NULL,                      // dst filter
+                                         NULL                       // param
+                                         );
+    if (is->img_convert_ctx == NULL)
+    {
+        printf("sws_getContext() failed\n");
+        return -1;
+    }
+
+    // SDL_Rect赋值
     is->sdl_video.rect.x = 0;
     is->sdl_video.rect.y = 0;
-    is->sdl_video.rect.w = is->p_video_codec_ctx->width;
-    is->sdl_video.rect.h = is->p_video_codec_ctx->height;
-
+    is->sdl_video.rect.w = is->p_vcodec_ctx->width;
+    is->sdl_video.rect.h = is->p_vcodec_ctx->height;
 
     // 1. 创建SDL窗口，SDL 2.0支持多窗口
     //    SDL_Window即运行程序后弹出的视频窗口，同SDL 1.x中的SDL_Surface
@@ -443,8 +448,8 @@ static int open_video_playing(void *arg)
         return -1;
     }
 
-    // B3. 创建SDL_Texture
-    //     一个SDL_Texture对应一帧YUV数据，同SDL 1.x中的SDL_Overlay
+    // 3. 创建SDL_Texture
+    //    一个SDL_Texture对应一帧YUV数据，同SDL 1.x中的SDL_Overlay
    is->sdl_video.texture = SDL_CreateTexture(is->sdl_video.renderer, 
                                     SDL_PIXELFORMAT_IYUV, 
                                     SDL_TEXTUREACCESS_STREAMING,
@@ -487,14 +492,14 @@ static int open_video_stream(player_stat_t *is)
     p_codec_ctx = avcodec_alloc_context3(p_codec);
     if (p_codec_ctx == NULL)
     {
-        printf("avcodec_alloc_context3() failed %d\n", ret);
+        printf("avcodec_alloc_context3() failed\n");
         return -1;
     }
     // 1.3.2 p_codec_ctx初始化：p_codec_par ==> p_codec_ctx，初始化相应成员
     ret = avcodec_parameters_to_context(p_codec_ctx, p_codec_par);
     if (ret < 0)
     {
-        printf("avcodec_parameters_to_context() failed %d\n", ret);
+        printf("avcodec_parameters_to_context() failed\n");
         return -1;
     }
     // 1.3.3 p_codec_ctx初始化：使用p_codec初始化p_codec_ctx，初始化完成
@@ -504,17 +509,8 @@ static int open_video_stream(player_stat_t *is)
         printf("avcodec_open2() failed %d\n", ret);
         return -1;
     }
-    
-    #if 0
-    int temp_num = p_fmt_ctx->streams[stream_idx]->avg_frame_rate.num;
-    int temp_den = p_fmt_ctx->streams[stream_idx]->avg_frame_rate.den;
-    int frame_rate = (temp_den > 0) ? temp_num/temp_den : 25;
-    int interval = (temp_num > 0) ? (temp_den*1000)/temp_num : 40;
 
-    printf("frame rate %d FPS, refresh interval %d ms\n", frame_rate, interval);
-    #endif
-
-    is->p_video_codec_ctx = p_codec_ctx;
+    is->p_vcodec_ctx = p_codec_ctx;
     
     // 2. 创建视频解码线程
     SDL_CreateThread(video_decode_thread, "video decode thread", is);

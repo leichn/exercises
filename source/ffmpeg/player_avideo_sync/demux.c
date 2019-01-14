@@ -1,4 +1,4 @@
-#include "demux.h"
+﻿#include "demux.h"
 #include "packet.h"
 
 static int decode_interrupt_cb(void *ctx)
@@ -50,7 +50,7 @@ static int demux_init(player_stat_t *is)
     // 2. 查找第一个音频流/视频流
     a_idx = -1;
     v_idx = -1;
-    for (i=0; i<p_fmt_ctx->nb_streams; i++)
+    for (i=0; i<(int)p_fmt_ctx->nb_streams; i++)
     {
         if ((p_fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) &&
             (a_idx == -1))
@@ -91,7 +91,15 @@ static int demux_init(player_stat_t *is)
 
 int demux_deinit()
 {
+    return 0;
+}
 
+static int stream_has_enough_packets(AVStream *st, int stream_id, packet_queue_t *queue)
+{
+    return stream_id < 0 ||
+           queue->abort_request ||
+           (st->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
+           queue->nb_packets > MIN_FRAMES && (!queue->duration || av_q2d(st->time_base) * queue->duration > 1.0);
 }
 
 /* this thread gets the stream from the disk or the network */
@@ -99,30 +107,27 @@ static int demux_thread(void *arg)
 {
     player_stat_t *is = (player_stat_t *)arg;
     AVFormatContext *p_fmt_ctx = is->p_fmt_ctx;
-    int err, i, ret;
+    int ret;
     AVPacket pkt1, *pkt = &pkt1;
 
     SDL_mutex *wait_mutex = SDL_CreateMutex();
-    int64_t pkt_ts;
+
+    printf("demux_thread running...\n");
 
     // 4. 解复用处理
-    for (;;)
+    while (1)
     {
-
-#if 0
         /* if the queue are full, no need to read more */
-        if (infinite_buffer<1 &&
-              (is->audioq.size + is->videoq.size + is->subtitleq.size > MAX_QUEUE_SIZE
-            || (stream_has_enough_packets(is->audio_st, is->audio_stream, &is->audioq) &&
-                stream_has_enough_packets(is->video_st, is->video_stream, &is->videoq) &&
-                stream_has_enough_packets(is->subtitle_st, is->subtitle_stream, &is->subtitleq)))) {
+        if (is->audio_pkt_queue.size + is->video_pkt_queue.size > MAX_QUEUE_SIZE ||
+            (stream_has_enough_packets(is->p_audio_stream, is->audio_idx, &is->audio_pkt_queue) &&
+             stream_has_enough_packets(is->p_video_stream, is->video_idx, &is->video_pkt_queue)))
+        {
             /* wait 10 ms */
             SDL_LockMutex(wait_mutex);
             SDL_CondWaitTimeout(is->continue_read_thread, wait_mutex, 10);
             SDL_UnlockMutex(wait_mutex);
             continue;
         }
-#endif
 
         // 4.1 从输入文件中读取一个packet
         ret = av_read_frame(is->p_fmt_ctx, pkt);
@@ -150,10 +155,14 @@ static int demux_thread(void *arg)
         // 4.3 根据当前packet类型(音频、视频、字幕)，将其存入对应的packet队列
         if (pkt->stream_index == is->audio_idx)
         {
+            printf("A");
+            fflush(stdout);
             packet_queue_put(&is->audio_pkt_queue, pkt);
         }
         else if (pkt->stream_index == is->video_idx)
         {
+            printf("V");
+            fflush(stdout);
             packet_queue_put(&is->video_pkt_queue, pkt);
         }
         else
@@ -190,4 +199,6 @@ int open_demux(player_stat_t *is)
         printf("SDL_CreateThread() failed: %s\n", SDL_GetError());
         return -1;
     }
+
+    return 0;
 }

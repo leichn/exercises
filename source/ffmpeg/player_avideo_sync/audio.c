@@ -1,4 +1,6 @@
-#include "player.h"
+﻿#include "player.h"
+#include "packet.h"
+#include "frame.h"
 
 static void sdl_audio_callback(void *opaque, Uint8 *stream, int len);
 
@@ -97,7 +99,7 @@ static int audio_decode_thread(void *arg)
     }
 
     do {
-        got_frame = audio_decode_frame(is->p_audio_codec_ctx, &is->audio_pkt_queue, p_frame);
+        got_frame = audio_decode_frame(is->p_acodec_ctx, &is->audio_pkt_queue, p_frame);
         if (got_frame < 0)
         {
             goto the_end;
@@ -129,7 +131,7 @@ static int audio_decode_thread(void *arg)
 
 int open_audio_stream(player_stat_t *is)
 {
-    AVCodecContext *p_codec_ctx = is->p_video_codec_ctx;
+    AVCodecContext *p_codec_ctx = is->p_vcodec_ctx;
     AVCodecParameters *p_codec_par = NULL;
     AVCodec* p_codec = NULL;
     SDL_AudioSpec wanted_spec;
@@ -153,7 +155,7 @@ int open_audio_stream(player_stat_t *is)
     p_codec_ctx = avcodec_alloc_context3(p_codec);
     if (p_codec_ctx == NULL)
     {
-        printf("avcodec_alloc_context3() failed %d\n", ret);
+        printf("avcodec_alloc_context3() failed\n");
         return -1;
     }
     // 1.3.2 p_codec_ctx初始化：p_codec_par ==> p_codec_ctx，初始化相应成员
@@ -171,7 +173,7 @@ int open_audio_stream(player_stat_t *is)
         return -1;
     }
 
-    is->p_audio_codec_ctx = p_codec_ctx;
+    is->p_acodec_ctx = p_codec_ctx;
     
     // 2. 打开音频设备并创建音频处理线程
     // 2.1 打开音频设备，获取SDL设备支持的音频参数actual_spec(期望的参数是wanted_spec，实际得到actual_spec)
@@ -375,7 +377,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
 
     while (len > 0) // 输入参数len等于is->audio_hw_buf_size，是audio_open()中申请到的SDL音频缓冲区大小
     {
-        if (is->audio_buf_index >= is->audio_buf_size)
+        if (is->audio_buf_index >= (int)is->audio_buf_size)
         {
            // 1. 从音频frame队列中取出一个frame，转换为音频设备支持的格式，返回值是重采样音频帧的大小
            audio_size = audio_resample(is);
