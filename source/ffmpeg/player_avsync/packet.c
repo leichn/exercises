@@ -15,7 +15,7 @@ int packet_queue_init(packet_queue_t *q)
         printf("SDL_CreateCond(): %s\n", SDL_GetError());
         return AVERROR(ENOMEM);
     }
-    q->abort_request = 1;
+    q->abort_request = 0;
     return 0;
 }
 

@@ -260,6 +260,7 @@ static void video_refresh(void *opaque, double *remaining_time)
 {
     player_stat_t *is = (player_stat_t *)opaque;
     double time;
+    static bool first_frame = true;
 
 retry:
     if (frame_queue_nb_remaining(&is->video_frm_queue) == 0)  // 所有帧已显示
@@ -275,16 +276,12 @@ retry:
     lastvp = frame_queue_peek_last(&is->video_frm_queue);     // 上一帧：上次已显示的帧
     vp = frame_queue_peek(&is->video_frm_queue);              // 当前帧：当前待显示的帧
 
-#if 0 //-
-    if (vp->serial != is->videoq.serial) {
-        frame_queue_next(&is->video_frm_queue);
-        goto retry;
-    }
-#endif
-
     // lastvp和vp不是同一播放序列(一个seek会开始一个新播放序列)，将frame_timer更新为当前时间
-    if (lastvp->serial != vp->serial)
+    if (first_frame)
+    {
         is->frame_timer = av_gettime_relative() / 1000000.0;
+        first_frame = false;
+    }
 
     /* compute nominal last_duration */
     last_duration = vp_duration(is, lastvp, vp);        // 上一帧播放时长：vp->pts - lastvp->pts
@@ -295,15 +292,17 @@ retry:
     if (time < is->frame_timer + delay) {
         // 播放时刻未到，则更新刷新时间remaining_time为当前时刻到下一播放时刻的时间差
         *remaining_time = FFMIN(is->frame_timer + delay - time, *remaining_time);
-        // 播放时刻未到，则不更新rindex，把上一帧lastvp再播放一遍
-        goto display;
+        // 播放时刻未到，则不播放，直接返回
+        return;
     }
 
     // 更新frame_timer值
     is->frame_timer += delay;
     // 校正frame_timer值：若frame_timer落后于当前系统时间太久(超过最大同步域值)，则更新为当前系统时间
     if (delay > 0 && time - is->frame_timer > AV_SYNC_THRESHOLD_MAX)
+    {
         is->frame_timer = time;
+    }
 
     SDL_LockMutex(is->video_frm_queue.mutex);
     if (!isnan(vp->pts))
@@ -343,7 +342,7 @@ static int video_playing_thread(void *arg)
     {
         if (remaining_time > 0.0)
         {
-            av_usleep((int64_t)(remaining_time * 1000000.0));
+            av_usleep((unsigned)(remaining_time * 1000000.0));
         }
         remaining_time = REFRESH_RATE;
         // 立即显示当前帧，或延时remaining_time后再显示

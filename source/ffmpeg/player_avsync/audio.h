@@ -3,6 +3,6 @@
 
 #include "player.h"
 
-int open_audio_stream(AVFormatContext* p_fmt_ctx, AVCodecContext* p_codec_ctx, const int steam_idx);
+int open_audio(player_stat_t *is);
 
 #endif

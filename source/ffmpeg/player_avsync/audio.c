@@ -39,18 +39,18 @@ static int audio_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
             }
             else if (ret == AVERROR_EOF)
             {
-                printf("video avcodec_send_packet(): the decoder has been flushed\n");
+                printf("audio avcodec_receive_frame(): the decoder has been flushed\n");
                 avcodec_flush_buffers(p_codec_ctx);
                 return 0;
             }
             else if (ret == AVERROR(EAGAIN))
             {
-                printf("video avcodec_send_packet(): input is not accepted in the current state\n");
+                printf("audio avcodec_receive_frame(): input is not accepted in the current state\n");
                 break;
             }
             else 
             {
-                printf("video avcodec_send_packet(): other errors\n");
+                printf("audio avcodec_receive_frame(): other errors\n");
                 continue;
             }
         }
@@ -74,7 +74,7 @@ static int audio_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
             //    pkt.pos变量可以标识当前packet在视频文件中的地址偏移
             if (avcodec_send_packet(p_codec_ctx, &pkt) == AVERROR(EAGAIN))
             {
-                printf("Receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
+                printf("receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
             }
 
             av_packet_unref(&pkt);
@@ -93,12 +93,13 @@ static int audio_decode_thread(void *arg)
     AVRational tb;
     int ret = 0;
 
-    if (!p_frame)
+    if (p_frame == NULL)
     {
         return AVERROR(ENOMEM);
     }
 
-    do {
+    while (1)
+    {
         got_frame = audio_decode_frame(is->p_acodec_ctx, &is->audio_pkt_queue, p_frame);
         if (got_frame < 0)
         {
@@ -107,24 +108,25 @@ static int audio_decode_thread(void *arg)
 
         if (got_frame)
         {
-                tb = (AVRational){1, p_frame->sample_rate};
+            tb = (AVRational){1, p_frame->sample_rate};
 
-                if (!(af = frame_queue_peek_writable(&is->audio_frm_queue)))
-                    goto the_end;
+            if (!(af = frame_queue_peek_writable(&is->audio_frm_queue)))
+                goto the_end;
 
-                af->pts = (p_frame->pts == AV_NOPTS_VALUE) ? NAN : p_frame->pts * av_q2d(tb);
-                af->pos = p_frame->pkt_pos;
-                //-af->serial = is->auddec.pkt_serial;
-                // 当前帧包含的(单个声道)采样数/采样率就是当前帧的播放时长
-                af->duration = av_q2d((AVRational){p_frame->nb_samples, p_frame->sample_rate});
+            af->pts = (p_frame->pts == AV_NOPTS_VALUE) ? NAN : p_frame->pts * av_q2d(tb);
+            af->pos = p_frame->pkt_pos;
+            //-af->serial = is->auddec.pkt_serial;
+            // 当前帧包含的(单个声道)采样数/采样率就是当前帧的播放时长
+            af->duration = av_q2d((AVRational){p_frame->nb_samples, p_frame->sample_rate});
 
-                // 将frame数据拷入af->frame，af->frame指向音频frame队列尾部
-                av_frame_move_ref(af->frame, p_frame);
-                // 更新音频frame队列大小及写指针
-                frame_queue_push(&is->audio_frm_queue);
+            // 将frame数据拷入af->frame，af->frame指向音频frame队列尾部
+            av_frame_move_ref(af->frame, p_frame);
+            // 更新音频frame队列大小及写指针
+            frame_queue_push(&is->audio_frm_queue);
         }
-    } while (ret >= 0 || ret == AVERROR(EAGAIN) || ret == AVERROR_EOF);
- the_end:
+    }
+
+the_end:
     av_frame_free(&p_frame);
     return ret;
 }
@@ -173,6 +175,7 @@ int open_audio_stream(player_stat_t *is)
         return -1;
     }
 
+    p_codec_ctx->pkt_timebase = is->p_audio_stream->time_base;
     is->p_acodec_ctx = p_codec_ctx;
     
     // 2. 打开音频设备并创建音频处理线程
@@ -236,6 +239,13 @@ static int audio_resample(player_stat_t *is)
     int wanted_nb_samples;
     frame_t *af;
 
+#if defined(_WIN32)
+    while (frame_queue_nb_remaining(&is->audio_frm_queue) == 0)
+    {
+        av_usleep(1000);
+    }
+#endif
+
     // 若队列头部可读，则由af指向可读帧
     if (!(af = frame_queue_peek_readable(&is->audio_frm_queue)))
         return -1;
@@ -250,6 +260,7 @@ static int audio_resample(player_stat_t *is)
     dec_channel_layout =
         (af->frame->channel_layout && af->frame->channels == av_get_channel_layout_nb_channels(af->frame->channel_layout)) ?
         af->frame->channel_layout : av_get_default_channel_layout(af->frame->channels);
+    wanted_nb_samples = af->frame->nb_samples;
 
     // is->audio_param_tgt是SDL可接受的音频帧数，是audio_open()中取得的参数
     // 在audio_open()函数中又有“is->audio_src = is->audio_param_tgt”
@@ -257,8 +268,7 @@ static int audio_resample(player_stat_t *is)
     // 　　　　　否则使用frame(源)和is->audio_param_tgt(目标)中的音频参数来设置is->swr_ctx，并使用frame中的音频参数来赋值is->audio_src
     if (af->frame->format        != is->audio_param_src.fmt            ||
         dec_channel_layout       != is->audio_param_src.channel_layout ||
-        af->frame->sample_rate   != is->audio_param_src.freq           ||
-        (wanted_nb_samples       != af->frame->nb_samples && !is->audio_swr_ctx))
+        af->frame->sample_rate   != is->audio_param_src.freq)
     {
         swr_free(&is->audio_swr_ctx);
         // 使用frame(源)和is->audio_param_tgt(目标)中的音频参数来设置is->audio_swr_ctx
@@ -299,16 +309,6 @@ static int audio_resample(player_stat_t *is)
         {
             av_log(NULL, AV_LOG_ERROR, "av_samples_get_buffer_size() failed\n");
             return -1;
-        }
-        // 如果frame中的样本数经过校正，则条件成立
-        if (wanted_nb_samples != af->frame->nb_samples)
-        {
-            // 重采样补偿：不清楚参数怎么算的
-            if (swr_set_compensation(is->audio_swr_ctx, (wanted_nb_samples - af->frame->nb_samples) * is->audio_param_tgt.freq / af->frame->sample_rate, 
-                                     wanted_nb_samples * is->audio_param_tgt.freq / af->frame->sample_rate) < 0) {
-                av_log(NULL, AV_LOG_ERROR, "swr_set_compensation() failed\n");
-                return -1;
-            }
         }
         av_fast_malloc(&is->audio_buf1, &is->audio_buf1_size, out_size);
         if (!is->audio_buf1)
@@ -415,7 +415,10 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
     {
         // 更新音频时钟，更新时刻：每次往声卡缓冲区拷入数据后
         // 前面audio_decode_frame中更新的is->audio_clock是以音频帧为单位，所以此处第二个参数要减去未拷贝数据量占用的时间
-        set_clock_at(&is->audio_clk, is->audio_clock - (double)(2 * is->audio_hw_buf_size + is->audio_write_buf_size) / is->audio_param_tgt.bytes_per_sec, is->audio_clock_serial, audio_callback_time / 1000000.0);
+        set_clock_at(&is->audio_clk, 
+                     is->audio_clock - (double)(2 * is->audio_hw_buf_size + is->audio_write_buf_size) / is->audio_param_tgt.bytes_per_sec, 
+                     is->audio_clock_serial, 
+                     audio_callback_time / 1000000.0);
         // 使用音频时钟更新外部时钟
         //sync_play_clock_to_slave(&is->extclk, &is->audclk);
     }

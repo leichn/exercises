@@ -167,6 +167,12 @@ int player_running(const char *p_input_file)
 
     open_demux(is);
     open_video(is);
+    open_audio(is);
+
+    while (1)
+    {
+        av_usleep(100000);
+    }
 
     return 0;
 }
