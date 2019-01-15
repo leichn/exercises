@@ -179,8 +179,8 @@ typedef struct FrameQueue {
     int windex;                     // 写索引。
     int size;                       // 总帧数
     int max_size;                   // 队列可存储最大帧数
-    int keep_last;
-    int rindex_shown;               // 当前是否有帧在显示
+    int keep_last;                  // 是否保留已播放的最后一帧使能标志
+    int rindex_shown;               // 是否保留已播放的最后一帧实现手段
     SDL_mutex *mutex;
     SDL_cond *cond;
     PacketQueue *pktq;              // 指向对应的packet_queue

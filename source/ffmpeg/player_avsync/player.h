@@ -112,7 +112,7 @@ typedef struct {
 typedef struct {
     frame_t queue[FRAME_QUEUE_SIZE];
     int rindex;                     // 读索引。待播放时读取此帧进行播放，播放后此帧成为上一帧
-    int windex;                     // 写索引。
+    int windex;                     // 写索引
     int size;                       // 总帧数
     int max_size;                   // 队列可存储最大帧数
     int keep_last;
