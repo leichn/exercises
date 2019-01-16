@@ -32,25 +32,25 @@ static int audio_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
                 }
                 else
                 {
-                    printf("frame->pts no\n");
+                    av_log(NULL, AV_LOG_WARNING, "frame->pts no\n");
                 }
 
                 return 1;
             }
             else if (ret == AVERROR_EOF)
             {
-                printf("audio avcodec_receive_frame(): the decoder has been flushed\n");
+                av_log(NULL, AV_LOG_INFO, "audio avcodec_receive_frame(): the decoder has been flushed\n");
                 avcodec_flush_buffers(p_codec_ctx);
                 return 0;
             }
             else if (ret == AVERROR(EAGAIN))
             {
-                printf("audio avcodec_receive_frame(): input is not accepted in the current state\n");
+                av_log(NULL, AV_LOG_INFO, "audio avcodec_receive_frame(): input is not accepted in the current state\n");
                 break;
             }
             else 
             {
-                printf("audio avcodec_receive_frame(): other errors\n");
+                av_log(NULL, AV_LOG_ERROR, "audio avcodec_receive_frame(): other errors\n");
                 continue;
             }
         }
@@ -74,7 +74,7 @@ static int audio_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
             //    pkt.pos变量可以标识当前packet在视频文件中的地址偏移
             if (avcodec_send_packet(p_codec_ctx, &pkt) == AVERROR(EAGAIN))
             {
-                printf("receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
+                av_log(NULL, AV_LOG_ERROR, "receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
             }
 
             av_packet_unref(&pkt);
@@ -133,7 +133,7 @@ the_end:
 
 int open_audio_stream(player_stat_t *is)
 {
-    AVCodecContext *p_codec_ctx = is->p_vcodec_ctx;
+    AVCodecContext *p_codec_ctx;
     AVCodecParameters *p_codec_par = NULL;
     AVCodec* p_codec = NULL;
     SDL_AudioSpec wanted_spec;
@@ -148,7 +148,7 @@ int open_audio_stream(player_stat_t *is)
     p_codec = avcodec_find_decoder(p_codec_par->codec_id);
     if (p_codec == NULL)
     {
-        printf("Cann't find codec!\n");
+        av_log(NULL, AV_LOG_ERROR, "Cann't find codec!\n");
         return -1;
     }
 
@@ -157,21 +157,21 @@ int open_audio_stream(player_stat_t *is)
     p_codec_ctx = avcodec_alloc_context3(p_codec);
     if (p_codec_ctx == NULL)
     {
-        printf("avcodec_alloc_context3() failed\n");
+        av_log(NULL, AV_LOG_ERROR, "avcodec_alloc_context3() failed\n");
         return -1;
     }
     // 1.3.2 p_codec_ctx初始化：p_codec_par ==> p_codec_ctx，初始化相应成员
     ret = avcodec_parameters_to_context(p_codec_ctx, p_codec_par);
     if (ret < 0)
     {
-        printf("avcodec_parameters_to_context() failed %d\n", ret);
+        av_log(NULL, AV_LOG_ERROR, "avcodec_parameters_to_context() failed %d\n", ret);
         return -1;
     }
     // 1.3.3 p_codec_ctx初始化：使用p_codec初始化p_codec_ctx，初始化完成
     ret = avcodec_open2(p_codec_ctx, p_codec, NULL);
     if (ret < 0)
     {
-        printf("avcodec_open2() failed %d\n", ret);
+        av_log(NULL, AV_LOG_ERROR, "avcodec_open2() failed %d\n", ret);
         return -1;
     }
 
@@ -188,12 +188,14 @@ int open_audio_stream(player_stat_t *is)
     wanted_spec.format = AUDIO_S16SYS;              // S表带符号，16是采样深度，SYS表采用系统字节序
     wanted_spec.channels = p_codec_ctx->channels;   // 声音通道数
     wanted_spec.silence = 0;                        // 静音值
-    wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;    // SDL声音缓冲区尺寸，单位是单声道采样点尺寸x通道数
+    // wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;    // SDL声音缓冲区尺寸，单位是单声道采样点尺寸x通道数
+    // SDL声音缓冲区尺寸，单位是单声道采样点尺寸x声道数
+    wanted_spec.samples = FFMAX(SDL_AUDIO_MIN_BUFFER_SIZE, 2 << av_log2(wanted_spec.freq / SDL_AUDIO_MAX_CALLBACKS_PER_SEC));
     wanted_spec.callback = sdl_audio_callback;      // 回调函数，若为NULL，则应使用SDL_QueueAudio()机制
     wanted_spec.userdata = is;                      // 提供给回调函数的参数
     if (SDL_OpenAudio(&wanted_spec, &actual_spec) < 0)
     {
-        printf("SDL_OpenAudio() failed: %s\n", SDL_GetError());
+        av_log(NULL, AV_LOG_ERROR, "SDL_OpenAudio() failed: %s\n", SDL_GetError());
         return -1;
     }
 
@@ -211,7 +213,7 @@ int open_audio_stream(player_stat_t *is)
     is->audio_param_tgt.bytes_per_sec = av_samples_get_buffer_size(NULL, actual_spec.channels, actual_spec.freq, is->audio_param_tgt.fmt, 1);
     if (is->audio_param_tgt.bytes_per_sec <= 0 || is->audio_param_tgt.frame_size <= 0)
     {
-        printf("av_samples_get_buffer_size failed\n");
+        av_log(NULL, AV_LOG_ERROR, "av_samples_get_buffer_size failed\n");
         return -1;
     }
     is->audio_param_src = is->audio_param_tgt;

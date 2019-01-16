@@ -7,6 +7,7 @@
  *   2018-12-06 - [lei]     Playing audio&vidio
  *   2019-01-06 - [lei]     Add audio resampling, fix bug of unsupported audio 
  *                          format(such as planar)
+ *   2019-01-16 - [lei]     Sync video to audio.
  *
  * details:
  *   A simple ffmpeg player.
@@ -131,6 +132,11 @@ static player_stat_t *player_init(const char *p_input_file)
         goto fail;
     }
 
+    AVPacket flush_pkt;
+    flush_pkt.data = NULL;
+    packet_queue_put(&is->video_pkt_queue, &flush_pkt);
+    packet_queue_put(&is->audio_pkt_queue, &flush_pkt);
+
     if (!(is->continue_read_thread = SDL_CreateCond()))
     {
         av_log(NULL, AV_LOG_FATAL, "SDL_CreateCond(): %s\n", SDL_GetError());
@@ -143,6 +149,13 @@ fail:
     init_clock(&is->audio_clk, &is->audio_pkt_queue.serial);
 
     is->abort_request = 0;
+
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER))
+    {
+        av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n", SDL_GetError());
+        av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
+        exit(1);
+    }
 
     return is;
 }

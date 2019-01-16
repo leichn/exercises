@@ -56,19 +56,19 @@ static int video_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
             {
                 if (ret == AVERROR_EOF)
                 {
-                    printf("video avcodec_receive_frame(): the decoder has been fully flushed\n");
+                    av_log(NULL, AV_LOG_INFO, "video avcodec_receive_frame(): the decoder has been fully flushed\n");
                     avcodec_flush_buffers(p_codec_ctx);
                     return 0;
                 }
                 else if (ret == AVERROR(EAGAIN))
                 {
-                    printf("video avcodec_receive_frame(): output is not available in this state - "
+                    av_log(NULL, AV_LOG_INFO, "video avcodec_receive_frame(): output is not available in this state - "
                             "user must try to send new input\n");
                     break;
                 }
                 else
                 {
-                    printf("video avcodec_receive_frame(): other errors\n");
+                    av_log(NULL, AV_LOG_ERROR, "video avcodec_receive_frame(): other errors\n");
                     continue;
                 }
             }
@@ -100,7 +100,7 @@ static int video_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
             //    pkt.pos变量可以标识当前packet在视频文件中的地址偏移
             if (avcodec_send_packet(p_codec_ctx, &pkt) == AVERROR(EAGAIN))
             {
-                printf("receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
+                av_log(NULL, AV_LOG_ERROR, "receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
             }
 
             av_packet_unref(&pkt);
@@ -122,7 +122,7 @@ static int video_decode_thread(void *arg)
     
     if (p_frame == NULL)
     {
-        printf("av_frame_alloc() for p_frame failed\n");
+        av_log(NULL, AV_LOG_ERROR, "av_frame_alloc() for p_frame failed\n");
         return AVERROR(ENOMEM);
     }
 
@@ -328,9 +328,7 @@ retry:
     frame_queue_next(&is->video_frm_queue);
 
 display:
-    /* display picture */
-    //-if (is->force_refresh && is->pictq.rindex_shown)
-        video_display(is);                      // 取出当前帧vp(若有丢帧是nextvp)进行播放
+    video_display(is);                      // 取出当前帧vp(若有丢帧是nextvp)进行播放
 }
 
 static int video_playing_thread(void *arg)

@@ -155,14 +155,10 @@ static int demux_thread(void *arg)
         // 4.3 根据当前packet类型(音频、视频、字幕)，将其存入对应的packet队列
         if (pkt->stream_index == is->audio_idx)
         {
-            printf("A");
-            fflush(stdout);
             packet_queue_put(&is->audio_pkt_queue, pkt);
         }
         else if (pkt->stream_index == is->video_idx)
         {
-            printf("V");
-            fflush(stdout);
             packet_queue_put(&is->video_pkt_queue, pkt);
         }
         else
