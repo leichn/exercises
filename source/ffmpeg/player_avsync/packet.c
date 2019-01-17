@@ -108,3 +108,39 @@ int packet_queue_put_nullpacket(packet_queue_t *q, int stream_index)
     return packet_queue_put(q, pkt);
 }
 
+void packet_queue_flush(packet_queue_t *q)
+{
+    AVPacketList *pkt, *pkt1;
+
+    SDL_LockMutex(q->mutex);
+    for (pkt = q->first_pkt; pkt; pkt = pkt1) {
+        pkt1 = pkt->next;
+        av_packet_unref(&pkt->pkt);
+        av_freep(&pkt);
+    }
+    q->last_pkt = NULL;
+    q->first_pkt = NULL;
+    q->nb_packets = 0;
+    q->size = 0;
+    q->duration = 0;
+    SDL_UnlockMutex(q->mutex);
+}
+
+void packet_queue_destroy(packet_queue_t *q)
+{
+    packet_queue_flush(q);
+    SDL_DestroyMutex(q->mutex);
+    SDL_DestroyCond(q->cond);
+}
+
+void packet_queue_abort(packet_queue_t *q)
+{
+    SDL_LockMutex(q->mutex);
+
+    q->abort_request = 1;
+
+    SDL_CondSignal(q->cond);
+
+    SDL_UnlockMutex(q->mutex);
+}
+

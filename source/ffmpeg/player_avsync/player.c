@@ -13,11 +13,7 @@
  *   A simple ffmpeg player.
  *
  * refrence:
- *   1. https://blog.csdn.net/leixiaohua1020/article/details/38868499
- *   2. http://dranger.com/ffmpeg/ffmpegtutorial_all.html#tutorial01.html
- *   3. http://dranger.com/ffmpeg/ffmpegtutorial_all.html#tutorial02.html
- *   4. http://dranger.com/ffmpeg/ffmpegtutorial_all.html#tutorial03.html
- *   5. http://dranger.com/ffmpeg/ffmpegtutorial_all.html#tutorial04.html
+ *   ffplay.c in FFmpeg 4.1 project.
  *******************************************************************************/
 
 #include <stdio.h>
@@ -34,17 +30,22 @@
 static player_stat_t *player_init(const char *p_input_file);
 static int player_deinit(player_stat_t *is);
 
-// 返回值：如果按正常速度播放，则返回上一帧的pts；若是快进或快退播放，则返回上一帧的pts经校正后的值
+// 返回值：返回上一帧的pts更新值(上一帧pts+流逝的时间)
 double get_clock(play_clock_t *c)
 {
     if (*c->queue_serial != c->serial)
+    {
         return NAN;
-    if (c->paused) {
+    }
+    if (c->paused)
+    {
         return c->pts;
-    } else {
+    }
+    else
+    {
         double time = av_gettime_relative() / 1000000.0;
-        // 设c->speed为0，则展开得：(c->pts - c->last_updated) + time - (time - c->last_updated)*1 ＝ c->pts
-        return c->pts_drift + time - (time - c->last_updated) * (1.0 - c->speed);
+        double ret = c->pts_drift + time;   // 展开得： c->pts + (time - c->last_updated)
+        return ret;
     }
 }
 
@@ -163,9 +164,61 @@ fail:
 
 static int player_deinit(player_stat_t *is)
 {
+    /* XXX: use a special url_shutdown call to abort parse cleanly */
+    is->abort_request = 1;
+    SDL_WaitThread(is->read_tid, NULL);
+
+    /* close each stream */
+    if (is->audio_idx >= 0)
+    {
+        //stream_component_close(is, is->p_audio_stream);
+    }
+    if (is->video_idx >= 0)
+    {
+        //stream_component_close(is, is->p_video_stream);
+    }
+
+    avformat_close_input(&is->p_fmt_ctx);
+
+    packet_queue_abort(&is->video_pkt_queue);
+    packet_queue_abort(&is->audio_pkt_queue);
+    packet_queue_destroy(&is->video_pkt_queue);
+    packet_queue_destroy(&is->audio_pkt_queue);
+
+    /* free all pictures */
+    frame_queue_destory(&is->video_frm_queue);
+    frame_queue_destory(&is->audio_frm_queue);
+
+    SDL_DestroyCond(is->continue_read_thread);
+    sws_freeContext(is->img_convert_ctx);
+    av_free(is->filename);
+    if (is->sdl_video.texture)
+    {
+        SDL_DestroyTexture(is->sdl_video.texture);
+    }
+
+    av_free(is);
+
     return 0;
 }
 
+/* pause or resume the video */
+static void stream_toggle_pause(player_stat_t *is)
+{
+    if (is->paused)
+    {
+        // 这里表示当前是暂停状态，将切换到继续播放状态。在继续播放之前，先将暂停期间流逝的时间加到frame_timer中
+        is->frame_timer += av_gettime_relative() / 1000000.0 - is->video_clk.last_updated;
+        set_clock(&is->video_clk, get_clock(&is->video_clk), is->video_clk.serial);
+    }
+    is->paused = is->audio_clk.paused = is->video_clk.paused = !is->paused;
+}
+
+static void toggle_pause(player_stat_t *is)
+{
+    stream_toggle_pause(is);
+    is->step = 0;
+}
 
 int player_running(const char *p_input_file)
 {
@@ -182,9 +235,44 @@ int player_running(const char *p_input_file)
     open_video(is);
     open_audio(is);
 
+    SDL_Event event;
+
     while (1)
     {
-        av_usleep(100000);
+        SDL_PumpEvents();
+        // SDL event队列为空，则在while循环中播放视频帧。否则从队列头部取一个event，退出当前函数，在上级函数中处理event
+        while (!SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT))
+        {
+            av_usleep(100000);
+            SDL_PumpEvents();
+        }
+
+        switch (event.type) {
+        case SDL_KEYDOWN:
+            if (event.key.keysym.sym == SDLK_ESCAPE)
+            {
+                do_exit(is);
+                break;
+            }
+
+            switch (event.key.keysym.sym) {
+            case SDLK_SPACE:        // 空格键：暂停
+                toggle_pause(is);
+                break;
+            case SDL_WINDOWEVENT:
+                break;
+            default:
+                break;
+            }
+            break;
+
+        case SDL_QUIT:
+        case FF_QUIT_EVENT:
+            do_exit(is);
+            break;
+        default:
+            break;
+        }
     }
 
     return 0;

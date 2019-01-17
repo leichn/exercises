@@ -117,6 +117,11 @@ static int demux_thread(void *arg)
     // 4. 解复用处理
     while (1)
     {
+        if (is->abort_request)
+        {
+            break;
+        }
+        
         /* if the queue are full, no need to read more */
         if (is->audio_pkt_queue.size + is->video_pkt_queue.size > MAX_QUEUE_SIZE ||
             (stream_has_enough_packets(is->p_audio_stream, is->audio_idx, &is->audio_pkt_queue) &&
@@ -169,7 +174,8 @@ static int demux_thread(void *arg)
 
     ret = 0;
 
-    if (ret != 0) {
+    if (ret != 0)
+    {
         SDL_Event event;
 
         event.type = FF_QUIT_EVENT;
@@ -189,8 +195,8 @@ int open_demux(player_stat_t *is)
         return -1;
     }
 
-    SDL_Thread *tid = SDL_CreateThread(demux_thread, "demux_thread", is);
-    if (tid == NULL)
+    is->read_tid = SDL_CreateThread(demux_thread, "demux_thread", is);
+    if (is->read_tid == NULL)
     {
         printf("SDL_CreateThread() failed: %s\n", SDL_GetError());
         return -1;

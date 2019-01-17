@@ -218,8 +218,8 @@ int open_audio_stream(player_stat_t *is)
     }
     is->audio_param_src = is->audio_param_tgt;
     is->audio_hw_buf_size = actual_spec.size;   // SDL音频缓冲区大小
-    is->audio_buf_size  = 0;
-    is->audio_buf_index = 0;
+    is->audio_frm_size  = 0;
+    is->audio_cp_index = 0;
     
     // 3. 暂停/继续音频回调处理。参数1表暂停，0表继续。
     //     打开音频设备后默认未启动回调处理，通过调用SDL_PauseAudio(0)来启动回调处理。
@@ -233,7 +233,7 @@ int open_audio_stream(player_stat_t *is)
     return 0;
 }
 
-static int audio_resample(player_stat_t *is)
+static int audio_resample(player_stat_t *is, int64_t audio_callback_time)
 {
     int data_size, resampled_data_size;
     int64_t dec_channel_layout;
@@ -244,6 +244,8 @@ static int audio_resample(player_stat_t *is)
 #if defined(_WIN32)
     while (frame_queue_nb_remaining(&is->audio_frm_queue) == 0)
     {
+        if ((av_gettime_relative() - audio_callback_time) > 1000000LL * is->audio_hw_buf_size / is->audio_param_tgt.bytes_per_sec / 2)
+            return -1;
         av_usleep(1000);
     }
 #endif
@@ -301,7 +303,7 @@ static int audio_resample(player_stat_t *is)
         const uint8_t **in = (const uint8_t **)af->frame->extended_data;
         // 重采样输出参数1：输出音频缓冲区尺寸
         // 重采样输出参数2：输出音频缓冲区
-        uint8_t **out = &is->audio_buf1;
+        uint8_t **out = &is->audio_frm_rwr;
         // 重采样输出参数：输出音频样本数(多加了256个样本)
         int out_count = (int64_t)wanted_nb_samples * is->audio_param_tgt.freq / af->frame->sample_rate + 256;
         // 重采样输出参数：输出音频缓冲区尺寸(以字节为单位)
@@ -312,8 +314,8 @@ static int audio_resample(player_stat_t *is)
             av_log(NULL, AV_LOG_ERROR, "av_samples_get_buffer_size() failed\n");
             return -1;
         }
-        av_fast_malloc(&is->audio_buf1, &is->audio_buf1_size, out_size);
-        if (!is->audio_buf1)
+        av_fast_malloc(&is->audio_frm_rwr, &is->audio_frm_rwr_size, out_size);
+        if (!is->audio_frm_rwr)
             return AVERROR(ENOMEM);
         // 音频重采样：返回值是重采样后得到的音频数据中单个声道的样本数
         len2 = swr_convert(is->audio_swr_ctx, out, out_count, in, af->frame->nb_samples);
@@ -328,14 +330,14 @@ static int audio_resample(player_stat_t *is)
             if (swr_init(is->audio_swr_ctx) < 0)
                 swr_free(&is->audio_swr_ctx);
         }
-        is->audio_buf = is->audio_buf1;
+        is->p_audio_frm = is->audio_frm_rwr;
         // 重采样返回的一帧音频数据大小(以字节为单位)
         resampled_data_size = len2 * is->audio_param_tgt.channels * av_get_bytes_per_sample(is->audio_param_tgt.fmt);
     }
     else
     {
         // 未经重采样，则将指针指向frame中的音频数据
-        is->audio_buf = af->frame->data[0];
+        is->p_audio_frm = af->frame->data[0];
         resampled_data_size = data_size;
     }
 
@@ -362,7 +364,6 @@ static int audio_resample(player_stat_t *is)
     return resampled_data_size;
 }
 
-int64_t audio_callback_time;
 // 音频处理回调函数。读队列获取音频包，解码，播放
 // 此函数被SDL按需调用，此函数不在用户主线程中，因此数据需要保护
 // \param[in]  opaque 用户在注册回调函数时指定的参数
@@ -375,42 +376,49 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
     player_stat_t *is = (player_stat_t *)opaque;
     int audio_size, len1;
 
-    audio_callback_time = av_gettime_relative();
+    int64_t audio_callback_time = av_gettime_relative();
 
     while (len > 0) // 输入参数len等于is->audio_hw_buf_size，是audio_open()中申请到的SDL音频缓冲区大小
     {
-        if (is->audio_buf_index >= (int)is->audio_buf_size)
+        if (is->audio_cp_index >= (int)is->audio_frm_size)
         {
            // 1. 从音频frame队列中取出一个frame，转换为音频设备支持的格式，返回值是重采样音频帧的大小
-           audio_size = audio_resample(is);
+           audio_size = audio_resample(is, audio_callback_time);
            if (audio_size < 0)
            {
                 /* if error, just output silence */
-               is->audio_buf = NULL;
-               is->audio_buf_size = SDL_AUDIO_MIN_BUFFER_SIZE / is->audio_param_tgt.frame_size * is->audio_param_tgt.frame_size;
+               is->p_audio_frm = NULL;
+               is->audio_frm_size = SDL_AUDIO_MIN_BUFFER_SIZE / is->audio_param_tgt.frame_size * is->audio_param_tgt.frame_size;
            }
            else
            {
-               is->audio_buf_size = audio_size;
+               is->audio_frm_size = audio_size;
            }
-           is->audio_buf_index = 0;
+           is->audio_cp_index = 0;
         }
-        // 引入is->audio_buf_index的作用：防止一帧音频数据大小超过SDL音频缓冲区大小，这样一帧数据需要经过多次拷贝
-        // 用is->audio_buf_index标识重采样帧中已拷入SDL音频缓冲区的数据位置索引，len1表示本次拷贝的数据量
-        len1 = is->audio_buf_size - is->audio_buf_index;
+        // 引入is->audio_cp_index的作用：防止一帧音频数据大小超过SDL音频缓冲区大小，这样一帧数据需要经过多次拷贝
+        // 用is->audio_cp_index标识重采样帧中已拷入SDL音频缓冲区的数据位置索引，len1表示本次拷贝的数据量
+        len1 = is->audio_frm_size - is->audio_cp_index;
         if (len1 > len)
         {
             len1 = len;
         }
         // 2. 将转换后的音频数据拷贝到音频缓冲区stream中，之后的播放就是音频设备驱动程序的工作了
-        memcpy(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, len1);
+        if (is->p_audio_frm != NULL)
+        {
+            memcpy(stream, (uint8_t *)is->p_audio_frm + is->audio_cp_index, len1);
+        }
+        else
+        {
+            memset(stream, 0, len1);
+        }
 
         len -= len1;
         stream += len1;
-        is->audio_buf_index += len1;
+        is->audio_cp_index += len1;
     }
     // is->audio_write_buf_size是本帧中尚未拷入SDL音频缓冲区的数据量
-    is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index;
+    is->audio_write_buf_size = is->audio_frm_size - is->audio_cp_index;
     /* Let's assume the audio driver that is used by SDL has two periods. */
     // 3. 更新时钟
     if (!isnan(is->audio_clock))
@@ -421,8 +429,6 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
                      is->audio_clock - (double)(2 * is->audio_hw_buf_size + is->audio_write_buf_size) / is->audio_param_tgt.bytes_per_sec, 
                      is->audio_clock_serial, 
                      audio_callback_time / 1000000.0);
-        // 使用音频时钟更新外部时钟
-        //sync_play_clock_to_slave(&is->extclk, &is->audclk);
     }
 }
 

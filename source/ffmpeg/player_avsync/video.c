@@ -283,6 +283,10 @@ retry:
         first_frame = false;
     }
 
+    // 暂停处理：不停播放上一帧图像
+    if (is->paused)
+        goto display;
+
     /* compute nominal last_duration */
     last_duration = vp_duration(is, lastvp, vp);        // 上一帧播放时长：vp->pts - lastvp->pts
     delay = compute_target_delay(last_duration, is);    // 根据视频时钟和同步时钟的差值，计算delay值

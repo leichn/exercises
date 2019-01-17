@@ -1409,7 +1409,7 @@ static void video_display(VideoState *is)
     SDL_RenderPresent(renderer);
 }
 
-// 返回值：如果按正常速度播放，则返回上一帧的pts；若是快进或快退播放，则返回上一帧的pts经校正后的值
+// 返回值：返回上一帧的pts更新值(上一帧pts+流逝的时间)
 static double get_clock(Clock *c)
 {
     if (*c->queue_serial != c->serial)
@@ -1418,7 +1418,8 @@ static double get_clock(Clock *c)
         return c->pts;
     } else {
         double time = av_gettime_relative() / 1000000.0;
-        // 设c->speed为0，则展开得：(c->pts - c->last_updated) + time - (time - c->last_updated)*1 ＝ c->pts
+        // 设c->speed为1，则展开得：(上一帧pts+流逝的时间)
+        // (c->pts - c->last_updated) + time ＝  c->pts + (time - c->last_updated)
         return c->pts_drift + time - (time - c->last_updated) * (1.0 - c->speed);
     }
 }
