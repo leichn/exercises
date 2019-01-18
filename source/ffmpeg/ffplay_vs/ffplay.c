@@ -197,7 +197,7 @@ typedef struct Decoder {
     PacketQueue *queue;
     AVCodecContext *avctx;
     int pkt_serial;                 // 从packet_queue中取出的当前packet的serial
-    int finished;
+    int finished;                   // 播放结束时赋值为pkt_serial值
     int packet_pending;
     SDL_cond *empty_queue_cond;
     int64_t start_pts;
@@ -215,10 +215,10 @@ typedef struct VideoState {
     int paused;
     int last_paused;
     int queue_attachments_req;
-    int seek_req;
-    int seek_flags;
-    int64_t seek_pos;
-    int64_t seek_rel;
+    int seek_req;                   // 标识一次SEEK请求
+    int seek_flags;                 // SEEK标志，诸如AVSEEK_FLAG_BYTE等
+    int64_t seek_pos;               // SEEK的目标位置(当前位置+增量)
+    int64_t seek_rel;               // 本次SEEK的位置增量
     int read_pause_return;
     AVFormatContext *ic;
     int realtime;
@@ -3157,15 +3157,16 @@ static int read_thread(void *arg)
             SDL_UnlockMutex(wait_mutex);
             continue;
         }
+        // 播放结束时的处理
         if (!is->paused &&
             (!is->audio_st || (is->auddec.finished == is->audioq.serial && frame_queue_nb_remaining(&is->sampq) == 0)) &&
             (!is->video_st || (is->viddec.finished == is->videoq.serial && frame_queue_nb_remaining(&is->pictq) == 0))) {
-            if (loop != 1 && (!loop || --loop)) {
+            if (loop != 1 && (!loop || --loop)) {   // loop控制播放次数，如果播放次数大于1(0表示无数次)，则从头开始播放
                 stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
-            } else if (autoexit) {
+            } else if (autoexit) {                  // 自动退出
                 ret = AVERROR_EOF;
                 goto fail;
-            }
+            }                                       // loop值为1，只播放一次，当前视频播放完了停在最后画面，无其他操作
         }
         // 4.1 从输入文件中读取一个packet
         ret = av_read_frame(ic, pkt);
@@ -3511,10 +3512,10 @@ static void event_loop(VideoState *cur_stream)
                 seek_chapter(cur_stream, -1);
                 break;
             case SDLK_LEFT:
-                incr = seek_interval ? -seek_interval : -10.0;
+                incr = seek_interval ? -seek_interval : -10.0;  // 后退10.0秒
                 goto do_seek;
             case SDLK_RIGHT:
-                incr = seek_interval ? seek_interval : 10.0;
+                incr = seek_interval ? seek_interval : 10.0;    // 前进10.0秒
                 goto do_seek;
             case SDLK_UP:
                 incr = 60.0;
@@ -3531,18 +3532,21 @@ static void event_loop(VideoState *cur_stream)
                         if (pos < 0)
                             pos = avio_tell(cur_stream->ic->pb);
                         if (cur_stream->ic->bit_rate)
-                            incr *= cur_stream->ic->bit_rate / 8.0;
+                            incr *= cur_stream->ic->bit_rate / 8.0;     // 增量为1秒的数据量
                         else
                             incr *= 180000.0;
                         pos += incr;
                         stream_seek(cur_stream, pos, incr, 1);
                     } else {
+                        // 获取同步主时钟的时钟值，实际就是最后播放帧的pts(单位秒，double型)加上流逝至今的时间
                         pos = get_master_clock(cur_stream);
                         if (isnan(pos))
                             pos = (double)cur_stream->seek_pos / AV_TIME_BASE;
+                        // 时钟值加上增量，作为预期的SEEK点
                         pos += incr;
                         if (cur_stream->ic->start_time != AV_NOPTS_VALUE && pos < cur_stream->ic->start_time / (double)AV_TIME_BASE)
                             pos = cur_stream->ic->start_time / (double)AV_TIME_BASE;
+                        // 先将SEEK相关值记录下来，这些值供后面SEEK操作时使用。此处表示期望的SEEK点是(pos*AV_TIME_BASE)us处
                         stream_seek(cur_stream, (int64_t)(pos * AV_TIME_BASE), (int64_t)(incr * AV_TIME_BASE), 0);
                     }
                 break;
