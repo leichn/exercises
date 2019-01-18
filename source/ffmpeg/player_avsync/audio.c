@@ -136,8 +136,6 @@ int open_audio_stream(player_stat_t *is)
     AVCodecContext *p_codec_ctx;
     AVCodecParameters *p_codec_par = NULL;
     AVCodec* p_codec = NULL;
-    SDL_AudioSpec wanted_spec;
-    SDL_AudioSpec actual_spec;
     int ret;
 
     // 1. 为音频流构建解码器AVCodecContext
@@ -178,55 +176,6 @@ int open_audio_stream(player_stat_t *is)
     p_codec_ctx->pkt_timebase = is->p_audio_stream->time_base;
     is->p_acodec_ctx = p_codec_ctx;
     
-    // 2. 打开音频设备并创建音频处理线程
-    // 2.1 打开音频设备，获取SDL设备支持的音频参数actual_spec(期望的参数是wanted_spec，实际得到actual_spec)
-    // 1) SDL提供两种使音频设备取得音频数据方法：
-    //    a. push，SDL以特定的频率调用回调函数，在回调函数中取得音频数据
-    //    b. pull，用户程序以特定的频率调用SDL_QueueAudio()，向音频设备提供数据。此种情况wanted_spec.callback=NULL
-    // 2) 音频设备打开后播放静音，不启动回调，调用SDL_PauseAudio(0)后启动回调，开始正常播放音频
-    wanted_spec.freq = p_codec_ctx->sample_rate;    // 采样率
-    wanted_spec.format = AUDIO_S16SYS;              // S表带符号，16是采样深度，SYS表采用系统字节序
-    wanted_spec.channels = p_codec_ctx->channels;   // 声音通道数
-    wanted_spec.silence = 0;                        // 静音值
-    // wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;    // SDL声音缓冲区尺寸，单位是单声道采样点尺寸x通道数
-    // SDL声音缓冲区尺寸，单位是单声道采样点尺寸x声道数
-    wanted_spec.samples = FFMAX(SDL_AUDIO_MIN_BUFFER_SIZE, 2 << av_log2(wanted_spec.freq / SDL_AUDIO_MAX_CALLBACKS_PER_SEC));
-    wanted_spec.callback = sdl_audio_callback;      // 回调函数，若为NULL，则应使用SDL_QueueAudio()机制
-    wanted_spec.userdata = is;                      // 提供给回调函数的参数
-    if (SDL_OpenAudio(&wanted_spec, &actual_spec) < 0)
-    {
-        av_log(NULL, AV_LOG_ERROR, "SDL_OpenAudio() failed: %s\n", SDL_GetError());
-        return -1;
-    }
-
-    // 2.2 根据SDL音频参数构建音频重采样参数
-    // wanted_spec是期望的参数，actual_spec是实际的参数，wanted_spec和auctual_spec都是SDL中的参数。
-    // 此处audio_param是FFmpeg中的参数，此参数应保证是SDL播放支持的参数，后面重采样要用到此参数
-    // 音频帧解码后得到的frame中的音频格式未必被SDL支持，比如frame可能是planar格式，但SDL2.0并不支持planar格式，
-    // 若将解码后的frame直接送入SDL音频缓冲区，声音将无法正常播放。所以需要先将frame重采样(转换格式)为SDL支持的模式，
-    // 然后送再写入SDL音频缓冲区
-    is->audio_param_tgt.fmt = AV_SAMPLE_FMT_S16;
-    is->audio_param_tgt.freq = actual_spec.freq;
-    is->audio_param_tgt.channel_layout = av_get_default_channel_layout(actual_spec.channels);;
-    is->audio_param_tgt.channels =  actual_spec.channels;
-    is->audio_param_tgt.frame_size = av_samples_get_buffer_size(NULL, actual_spec.channels, 1, is->audio_param_tgt.fmt, 1);
-    is->audio_param_tgt.bytes_per_sec = av_samples_get_buffer_size(NULL, actual_spec.channels, actual_spec.freq, is->audio_param_tgt.fmt, 1);
-    if (is->audio_param_tgt.bytes_per_sec <= 0 || is->audio_param_tgt.frame_size <= 0)
-    {
-        av_log(NULL, AV_LOG_ERROR, "av_samples_get_buffer_size failed\n");
-        return -1;
-    }
-    is->audio_param_src = is->audio_param_tgt;
-    is->audio_hw_buf_size = actual_spec.size;   // SDL音频缓冲区大小
-    is->audio_frm_size  = 0;
-    is->audio_cp_index = 0;
-    
-    // 3. 暂停/继续音频回调处理。参数1表暂停，0表继续。
-    //     打开音频设备后默认未启动回调处理，通过调用SDL_PauseAudio(0)来启动回调处理。
-    //     这样就可以在打开音频设备后先为回调函数安全初始化数据，一切就绪后再启动音频回调。
-    //     在暂停期间，会将静音值往音频设备写。
-    SDL_PauseAudio(0);
-
     // 2. 创建视频解码线程
     SDL_CreateThread(audio_decode_thread, "audio decode thread", is);
 
@@ -364,6 +313,62 @@ static int audio_resample(player_stat_t *is, int64_t audio_callback_time)
     return resampled_data_size;
 }
 
+static int open_audio_playing(void *arg)
+{
+    player_stat_t *is = (player_stat_t *)arg;
+    SDL_AudioSpec wanted_spec;
+    SDL_AudioSpec actual_spec;
+
+    // 2. 打开音频设备并创建音频处理线程
+    // 2.1 打开音频设备，获取SDL设备支持的音频参数actual_spec(期望的参数是wanted_spec，实际得到actual_spec)
+    // 1) SDL提供两种使音频设备取得音频数据方法：
+    //    a. push，SDL以特定的频率调用回调函数，在回调函数中取得音频数据
+    //    b. pull，用户程序以特定的频率调用SDL_QueueAudio()，向音频设备提供数据。此种情况wanted_spec.callback=NULL
+    // 2) 音频设备打开后播放静音，不启动回调，调用SDL_PauseAudio(0)后启动回调，开始正常播放音频
+    wanted_spec.freq = is->p_acodec_ctx->sample_rate;   // 采样率
+    wanted_spec.format = AUDIO_S16SYS;                  // S表带符号，16是采样深度，SYS表采用系统字节序
+    wanted_spec.channels = is->p_acodec_ctx->channels;  // 声音通道数
+    wanted_spec.silence = 0;                            // 静音值
+    // wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;     // SDL声音缓冲区尺寸，单位是单声道采样点尺寸x通道数
+    // SDL声音缓冲区尺寸，单位是单声道采样点尺寸x声道数
+    wanted_spec.samples = FFMAX(SDL_AUDIO_MIN_BUFFER_SIZE, 2 << av_log2(wanted_spec.freq / SDL_AUDIO_MAX_CALLBACKS_PER_SEC));
+    wanted_spec.callback = sdl_audio_callback;          // 回调函数，若为NULL，则应使用SDL_QueueAudio()机制
+    wanted_spec.userdata = is;                          // 提供给回调函数的参数
+    if (SDL_OpenAudio(&wanted_spec, &actual_spec) < 0)
+    {
+        av_log(NULL, AV_LOG_ERROR, "SDL_OpenAudio() failed: %s\n", SDL_GetError());
+        return -1;
+    }
+
+    // 2.2 根据SDL音频参数构建音频重采样参数
+    // wanted_spec是期望的参数，actual_spec是实际的参数，wanted_spec和auctual_spec都是SDL中的参数。
+    // 此处audio_param是FFmpeg中的参数，此参数应保证是SDL播放支持的参数，后面重采样要用到此参数
+    // 音频帧解码后得到的frame中的音频格式未必被SDL支持，比如frame可能是planar格式，但SDL2.0并不支持planar格式，
+    // 若将解码后的frame直接送入SDL音频缓冲区，声音将无法正常播放。所以需要先将frame重采样(转换格式)为SDL支持的模式，
+    // 然后送再写入SDL音频缓冲区
+    is->audio_param_tgt.fmt = AV_SAMPLE_FMT_S16;
+    is->audio_param_tgt.freq = actual_spec.freq;
+    is->audio_param_tgt.channel_layout = av_get_default_channel_layout(actual_spec.channels);;
+    is->audio_param_tgt.channels = actual_spec.channels;
+    is->audio_param_tgt.frame_size = av_samples_get_buffer_size(NULL, actual_spec.channels, 1, is->audio_param_tgt.fmt, 1);
+    is->audio_param_tgt.bytes_per_sec = av_samples_get_buffer_size(NULL, actual_spec.channels, actual_spec.freq, is->audio_param_tgt.fmt, 1);
+    if (is->audio_param_tgt.bytes_per_sec <= 0 || is->audio_param_tgt.frame_size <= 0)
+    {
+        av_log(NULL, AV_LOG_ERROR, "av_samples_get_buffer_size failed\n");
+        return -1;
+    }
+    is->audio_param_src = is->audio_param_tgt;
+    is->audio_hw_buf_size = actual_spec.size;   // SDL音频缓冲区大小
+    is->audio_frm_size = 0;
+    is->audio_cp_index = 0;
+
+    // 3. 暂停/继续音频回调处理。参数1表暂停，0表继续。
+    //     打开音频设备后默认未启动回调处理，通过调用SDL_PauseAudio(0)来启动回调处理。
+    //     这样就可以在打开音频设备后先为回调函数安全初始化数据，一切就绪后再启动音频回调。
+    //     在暂停期间，会将静音值往音频设备写。
+    SDL_PauseAudio(0);
+}
+
 // 音频处理回调函数。读队列获取音频包，解码，播放
 // 此函数被SDL按需调用，此函数不在用户主线程中，因此数据需要保护
 // \param[in]  opaque 用户在注册回调函数时指定的参数
@@ -435,6 +440,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
 int open_audio(player_stat_t *is)
 {
     open_audio_stream(is);
+    open_audio_playing(is);
 
     return 0;
 }
