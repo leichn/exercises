@@ -65,11 +65,14 @@ int main(int argc, char **argv)
     in_filename  = argv[1];
     out_filename = argv[2];
 
+    // 1. 打开输入
+    // 1.1 读取文件头，获取封装格式相关信息
     if ((ret = avformat_open_input(&ifmt_ctx, in_filename, 0, 0)) < 0) {
         fprintf(stderr, "Could not open input file '%s'", in_filename);
         goto end;
     }
-
+    
+    // 1.2 解码一段数据，获取流相关信息
     if ((ret = avformat_find_stream_info(ifmt_ctx, 0)) < 0) {
         fprintf(stderr, "Failed to retrieve input stream information");
         goto end;
@@ -77,6 +80,8 @@ int main(int argc, char **argv)
 
     av_dump_format(ifmt_ctx, 0, in_filename, 0);
 
+    // 2. 打开输出
+    // 2.1 分配输出ctx
     avformat_alloc_output_context2(&ofmt_ctx, NULL, NULL, out_filename);
     if (!ofmt_ctx) {
         fprintf(stderr, "Could not create output context\n");
@@ -107,6 +112,7 @@ int main(int argc, char **argv)
 
         stream_mapping[i] = stream_index++;
 
+        // 2.2 将一个新流(out_stream)添加到输出文件(ofmt_ctx)
         out_stream = avformat_new_stream(ofmt_ctx, NULL);
         if (!out_stream) {
             fprintf(stderr, "Failed allocating output stream\n");
@@ -114,6 +120,7 @@ int main(int argc, char **argv)
             goto end;
         }
 
+        // 2.3 将当前输入流中的参数拷贝到输出流中
         ret = avcodec_parameters_copy(out_stream->codecpar, in_codecpar);
         if (ret < 0) {
             fprintf(stderr, "Failed to copy codec parameters\n");
@@ -124,6 +131,7 @@ int main(int argc, char **argv)
     av_dump_format(ofmt_ctx, 0, out_filename, 1);
 
     if (!(ofmt->flags & AVFMT_NOFILE)) {
+        // 2.4 创建并初始化一个AVIOContext，用以访问URL(out_filename)指定的资源
         ret = avio_open(&ofmt_ctx->pb, out_filename, AVIO_FLAG_WRITE);
         if (ret < 0) {
             fprintf(stderr, "Could not open output file '%s'", out_filename);
@@ -131,6 +139,8 @@ int main(int argc, char **argv)
         }
     }
 
+    // 3. 数据处理
+    // 3.1 写输出文件头
     ret = avformat_write_header(ofmt_ctx, NULL);
     if (ret < 0) {
         fprintf(stderr, "Error occurred when opening output file\n");
@@ -140,6 +150,7 @@ int main(int argc, char **argv)
     while (1) {
         AVStream *in_stream, *out_stream;
 
+        // 3.2 从输出流读取一个packet
         ret = av_read_frame(ifmt_ctx, &pkt);
         if (ret < 0)
             break;
@@ -156,12 +167,19 @@ int main(int argc, char **argv)
         log_packet(ifmt_ctx, &pkt, "in");
 
         /* copy packet */
+        // 3.3 更新packet中的pts和dts
+        // 关于AVStream.time_base的说明：
+        // 输入：输入流中含有time_base，在avformat_find_stream_info()中可取到每个流中的time_base
+        // 输出：avformat_write_header()会根据输出的封装格式确定每个流的time_base并写入文件中
+        // AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
+        // 所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
         pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
         pkt.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
         pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
         pkt.pos = -1;
         log_packet(ofmt_ctx, &pkt, "out");
 
+        // 3.4 将packet写入输出
         ret = av_interleaved_write_frame(ofmt_ctx, &pkt);
         if (ret < 0) {
             fprintf(stderr, "Error muxing packet\n");
@@ -170,6 +188,7 @@ int main(int argc, char **argv)
         av_packet_unref(&pkt);
     }
 
+    // 3.5 写输出文件尾
     av_write_trailer(ofmt_ctx);
 end:
 
