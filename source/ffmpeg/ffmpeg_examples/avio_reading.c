@@ -39,6 +39,9 @@ struct buffer_data {
     size_t size; ///< size left in the buffer
 };
 
+// opaque是由用户提供的参数，buf是供FFmpeg作为输入或输出的缓冲区
+// 此处由用户准备好buf中的数据(将opaque中的内容拷贝到buf)，buf用作FFmpeg的输入
+// 返回值：本次IO数据量
 static int read_packet(void *opaque, uint8_t *buf, int buf_size)
 {
     struct buffer_data *bd = (struct buffer_data *)opaque;
@@ -75,6 +78,8 @@ int main(int argc, char *argv[])
     input_filename = argv[1];
 
     /* slurp file content into buffer */
+    // 将文件内容拷贝到内存区，或使用MMAP将文件映射到内存区，具体哪一种方式由HAVE_MMAP宏确定
+    // HAVE_MMAP宏在编译FFmpeg工程时由configure配置生成
     ret = av_file_map(input_filename, &buffer, &buffer_size, 0, NULL);
     if (ret < 0)
         goto end;
