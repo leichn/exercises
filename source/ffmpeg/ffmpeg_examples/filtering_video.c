@@ -127,7 +127,7 @@ static int init_filters(const char *filters_descr)
     }
 
     /* buffer video sink: to terminate the filter chain. */
-    // 根据滤镜buffersink_ctx、NULL、NULL三个参数创建滤镜实例buffersink_ctx
+    // 根据滤镜buffersink、NULL、NULL三个参数创建滤镜实例buffersink_ctx
     // 这个新创建的滤镜实例buffersink_ctx命名为"out"
     // 将新创建的滤镜实例添加到滤镜图filter_graph中
     ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out",
@@ -149,6 +149,8 @@ static int init_filters(const char *filters_descr)
      * Set the endpoints for the filter graph. The filter_graph will
      * be linked to the graph described by filters_descr.
      */
+    // 设置滤镜图的端点，包含此端点的滤镜图将会被连接到filters_descr
+    // 描述的滤镜图中
 
     /*
      * The buffer source output must be connected to the input pad of
@@ -156,6 +158,10 @@ static int init_filters(const char *filters_descr)
      * filter input label is not specified, it is set to "in" by
      * default.
      */
+    // outputs变量意指buffersrc_ctx滤镜的输出引脚(output pad)
+    // src缓冲区(buffersrc_ctx滤镜)的输出必须连到filters_descr中第一个
+    // 滤镜的输入；filters_descr中第一个滤镜的输入标号未指定，故默认为
+    // "in"，此处将buffersrc_ctx的输出标号也设为"in"，就实现了同标号相连
     outputs->name       = av_strdup("in");
     outputs->filter_ctx = buffersrc_ctx;
     outputs->pad_idx    = 0;
@@ -167,39 +173,35 @@ static int init_filters(const char *filters_descr)
      * filter output label is not specified, it is set to "out" by
      * default.
      */
+    // inputs变量意指buffersink_ctx滤镜的输入引脚(input pad)
+    // sink缓冲区(buffersink_ctx滤镜)的输入必须连到filters_descr中最后
+    // 一个滤镜的输出；filters_descr中最后一个滤镜的输出标号未指定，故
+    // 默认为"out"，此处将buffersink_ctx的输出标号也设为"out"，就实现了
+    // 同标号相连
     inputs->name       = av_strdup("out");
     inputs->filter_ctx = buffersink_ctx;
     inputs->pad_idx    = 0;
     inputs->next       = NULL;
 
-    /**
-     * Add a graph described by a string to a graph.
-     *
-     * In the graph filters description, if the input label of the first
-     * filter is not specified, "in" is assumed; if the output label of
-     * the last filter is not specified, "out" is assumed.
-     *
-     * @param graph   the filter graph where to link the parsed graph context
-     * @param filters string to be parsed
-     * @param inputs  pointer to a linked list to the inputs of the graph, may be NULL.
-     *                If non-NULL, *inputs is updated to contain the list of open inputs
-     *                after the parsing, should be freed with avfilter_inout_free().
-     * @param outputs pointer to a linked list to the outputs of the graph, may be NULL.
-     *                If non-NULL, *outputs is updated to contain the list of open outputs
-     *                after the parsing, should be freed with avfilter_inout_free().
-     * @return non negative on success, a negative AVERROR code on error
-     */
-    // 将filters_descr描述的滤镜graph添加到filter_graph
+    // 将filters_descr描述的滤镜图添加到filter_graph滤镜图中
     // 在filters_descr字符串中，如果第一个滤镜未指定输入标号，则假定为"in"；如果最后一个滤镜
     // 未指定输出标号，则假定为"out"。几个实参说明如下：
-    // @filter_graph
+    // @filter_graph  将字符串描述的滤镜图连接到此滤镜图中
     // @filters_descr 描述滤镜的字符串，用于解析生成滤镜图 
-    // @inputs        指向
-    // @outputs
+    // @inputs        指向滤镜图中输入链表，调用返回时，更新为包含开放输入列表
+    // @outputs       指向滤镜图的输出链表，调用返回时，更新为包含开放输出列表
+    // 我的话：
+    // 调用前：filter_graph包含两个滤镜buffersrc_ctx和buffersink_ctx
+    // 调用后：filters_descr描述的滤镜图插入到filter_graph中，buffersrc_ctx连接到filters_descr
+    //         的输入，filters_descr的输出连接到buffersink_ctx，filters_descr只进行了解析而不
+    //         建立内部滤镜间的连接。filters_desc与filter_graph间的连接是利用AVFilterInOut inputs
+    //         和AVFilterInOut inputs连接起来的，AVFilterInOut是一个链表，最终可用的连在一起的
+    //         滤镜链/滤镜图就是通过这个链表串在一起的。
     if ((ret = avfilter_graph_parse_ptr(filter_graph, filters_descr,
                                     &inputs, &outputs, NULL)) < 0)
         goto end;
 
+    // 验证有效性并配置filtergraph中所有连接和格式
     if ((ret = avfilter_graph_config(filter_graph, NULL)) < 0)
         goto end;
 

@@ -1000,6 +1000,13 @@ void avfilter_graph_free(AVFilterGraph **graph);
  * This struct specifies, per each not connected pad contained in the graph, the
  * filter context and the pad index required for establishing a link.
  */
+/**
+ * 滤镜链的输入/输出链表
+ *
+ * 本结构主要对avfilter_graph_parse() / avfilter_graph_parse2()比较有用，用于和这
+ * 两函数中的未连接输入和输出通信
+ * 对于包含在滤镜图中的每一个未连接pad，本结构指定了用于建立连接需要用的filter_ctr和pad_idx
+ */
 typedef struct AVFilterInOut {
     /** unique name for this input/output in the list */
     char *name;
