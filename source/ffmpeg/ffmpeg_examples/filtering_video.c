@@ -51,6 +51,7 @@ AVFilterGraph *filter_graph;
 static int video_stream_index = -1;
 static int64_t last_pts = AV_NOPTS_VALUE;
 
+// 打开输入文件，获得AVFormatContext、AVCodecContext和stream_index
 static int open_input_file(const char *filename)
 {
     int ret;
@@ -93,13 +94,16 @@ static int init_filters(const char *filters_descr)
 {
     char args[512];
     int ret = 0;
+    // "buffer"滤镜：缓冲视频帧，作为滤镜图的输入
     const AVFilter *buffersrc  = avfilter_get_by_name("buffer");
+    // "buffersink"滤镜：缓冲视频帧，作为滤镜图的输出
     const AVFilter *buffersink = avfilter_get_by_name("buffersink");
     AVFilterInOut *outputs = avfilter_inout_alloc();
     AVFilterInOut *inputs  = avfilter_inout_alloc();
     AVRational time_base = fmt_ctx->streams[video_stream_index]->time_base;
     enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_GRAY8, AV_PIX_FMT_NONE };
 
+    // 分配一个滤镜图filter_graph
     filter_graph = avfilter_graph_alloc();
     if (!outputs || !inputs || !filter_graph) {
         ret = AVERROR(ENOMEM);
@@ -112,7 +116,9 @@ static int init_filters(const char *filters_descr)
             dec_ctx->width, dec_ctx->height, dec_ctx->pix_fmt,
             time_base.num, time_base.den,
             dec_ctx->sample_aspect_ratio.num, dec_ctx->sample_aspect_ratio.den);
-
+    // 根据滤镜buffersrc、args、NULL三个参数创建滤镜实例buffersrc_ctx
+    // 这个新创建的滤镜实例buffersrc_ctx命名为"in"
+    // 将新创建的滤镜实例添加到滤镜图filter_graph中
     ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in",
                                        args, NULL, filter_graph);
     if (ret < 0) {
@@ -121,6 +127,9 @@ static int init_filters(const char *filters_descr)
     }
 
     /* buffer video sink: to terminate the filter chain. */
+    // 根据滤镜buffersink_ctx、NULL、NULL三个参数创建滤镜实例buffersink_ctx
+    // 这个新创建的滤镜实例buffersink_ctx命名为"out"
+    // 将新创建的滤镜实例添加到滤镜图filter_graph中
     ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out",
                                        NULL, NULL, filter_graph);
     if (ret < 0) {
@@ -128,6 +137,7 @@ static int init_filters(const char *filters_descr)
         goto end;
     }
 
+    // 设置输出像素格式为
     ret = av_opt_set_int_list(buffersink_ctx, "pix_fmts", pix_fmts,
                               AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
     if (ret < 0) {
@@ -162,6 +172,30 @@ static int init_filters(const char *filters_descr)
     inputs->pad_idx    = 0;
     inputs->next       = NULL;
 
+    /**
+     * Add a graph described by a string to a graph.
+     *
+     * In the graph filters description, if the input label of the first
+     * filter is not specified, "in" is assumed; if the output label of
+     * the last filter is not specified, "out" is assumed.
+     *
+     * @param graph   the filter graph where to link the parsed graph context
+     * @param filters string to be parsed
+     * @param inputs  pointer to a linked list to the inputs of the graph, may be NULL.
+     *                If non-NULL, *inputs is updated to contain the list of open inputs
+     *                after the parsing, should be freed with avfilter_inout_free().
+     * @param outputs pointer to a linked list to the outputs of the graph, may be NULL.
+     *                If non-NULL, *outputs is updated to contain the list of open outputs
+     *                after the parsing, should be freed with avfilter_inout_free().
+     * @return non negative on success, a negative AVERROR code on error
+     */
+    // 将filters_descr描述的滤镜graph添加到filter_graph
+    // 在filters_descr字符串中，如果第一个滤镜未指定输入标号，则假定为"in"；如果最后一个滤镜
+    // 未指定输出标号，则假定为"out"。几个实参说明如下：
+    // @filter_graph
+    // @filters_descr 描述滤镜的字符串，用于解析生成滤镜图 
+    // @inputs        指向
+    // @outputs
     if ((ret = avfilter_graph_parse_ptr(filter_graph, filters_descr,
                                     &inputs, &outputs, NULL)) < 0)
         goto end;
@@ -226,17 +260,22 @@ int main(int argc, char **argv)
         exit(1);
     }
 
+    // 1. 打开输入
     if ((ret = open_input_file(argv[1])) < 0)
         goto end;
+    // 2. 初始化滤镜操作
     if ((ret = init_filters(filter_descr)) < 0)
         goto end;
 
     /* read all packets */
     while (1) {
+        // 3. 读取packet
         if ((ret = av_read_frame(fmt_ctx, &packet)) < 0)
             break;
 
         if (packet.stream_index == video_stream_index) {
+            // 4. 解码packet，生成frame
+            // 4.1 将packet送入解码器
             ret = avcodec_send_packet(dec_ctx, &packet);
             if (ret < 0) {
                 av_log(NULL, AV_LOG_ERROR, "Error while sending a packet to the decoder\n");
@@ -244,6 +283,7 @@ int main(int argc, char **argv)
             }
 
             while (ret >= 0) {
+                // 4.2 从解码器接收解码后的frame
                 ret = avcodec_receive_frame(dec_ctx, frame);
                 if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
                     break;
@@ -254,7 +294,9 @@ int main(int argc, char **argv)
 
                 frame->pts = frame->best_effort_timestamp;
 
+                // 5. 滤镜处理
                 /* push the decoded frame into the filtergraph */
+                // 5.1 将frame送入filtergraph
                 if (av_buffersrc_add_frame_flags(buffersrc_ctx, frame, AV_BUFFERSRC_FLAG_KEEP_REF) < 0) {
                     av_log(NULL, AV_LOG_ERROR, "Error while feeding the filtergraph\n");
                     break;
@@ -262,11 +304,13 @@ int main(int argc, char **argv)
 
                 /* pull filtered frames from the filtergraph */
                 while (1) {
+                    // 5.2 从filtergraph获取经过处理的frame
                     ret = av_buffersink_get_frame(buffersink_ctx, filt_frame);
                     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
                         break;
                     if (ret < 0)
                         goto end;
+                    // 6. 显示frame
                     display_frame(filt_frame, buffersink_ctx->inputs[0]->time_base);
                     av_frame_unref(filt_frame);
                 }
