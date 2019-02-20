@@ -467,7 +467,7 @@ int video_thread(void *arg)
     p_frm_yuv = av_frame_alloc();
     if (p_frm_yuv == NULL)
     {
-        printf("av_frame_alloc() for p_frm_raw failed\n");
+        printf("av_frame_alloc() for p_frm_yuv failed\n");
         res = -1;
         goto exit1;
     }

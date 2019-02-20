@@ -182,7 +182,7 @@ int main(int argc, char *argv[])
     p_frm_yuv = av_frame_alloc();
     if (p_frm_yuv == NULL)
     {
-        printf("av_frame_alloc() for p_frm_raw failed\n");
+        printf("av_frame_alloc() for p_frm_yuv failed\n");
         res = -1;
         goto exit3;
     }
@@ -449,7 +449,7 @@ exit4:
 exit3:
     av_frame_free(&p_frm_raw);
 exit2:
-    avcodec_free_context(p_codec_ctx);
+    avcodec_free_context(&p_codec_ctx);
 exit1:
     avformat_close_input(&p_fmt_ctx);
 exit0:
