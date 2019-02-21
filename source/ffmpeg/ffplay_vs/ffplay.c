@@ -47,6 +47,9 @@
 #include "libavcodec/avfft.h"
 #include "libswresample/swresample.h"
 
+// add by @20190221, enable filter function
+#define CONFIG_AVFILTER 1
+
 #if CONFIG_AVFILTER
 # include "libavfilter/avfilter.h"
 # include "libavfilter/buffersink.h"
@@ -863,10 +866,12 @@ static inline void fill_rectangle(int x, int y, int w, int h)
         SDL_RenderFillRect(renderer, &rect);
 }
 
+// 若有必要(显示参数有变或texture无效)则重建texture
 static int realloc_texture(SDL_Texture **texture, Uint32 new_format, int new_width, int new_height, SDL_BlendMode blendmode, int init_texture)
 {
     Uint32 format;
     int access, w, h;
+    // 1) texture未曾建立 2) texture无效，无法查得相关属性 3) 宽、高、像素格式有变化，这三种情况下需要重建texture
     if (!*texture || SDL_QueryTexture(*texture, &format, &access, &w, &h) < 0 || new_width != w || new_height != h || new_format != format) {
         void *pixels;
         int pitch;
@@ -918,6 +923,7 @@ static void calculate_display_rect(SDL_Rect *rect,
     rect->h = FFMAX(height, 1);
 }
 
+// 获取输入参数format(FFmpeg像素格式)在SDL中的像素格式，取到的SDL像素格式存在输出参数sdl_pix_fmt中
 static void get_sdl_pix_fmt_and_blendmode(int format, Uint32 *sdl_pix_fmt, SDL_BlendMode *sdl_blendmode)
 {
     int i;
@@ -926,8 +932,10 @@ static void get_sdl_pix_fmt_and_blendmode(int format, Uint32 *sdl_pix_fmt, SDL_B
     if (format == AV_PIX_FMT_RGB32   ||
         format == AV_PIX_FMT_RGB32_1 ||
         format == AV_PIX_FMT_BGR32   ||
-        format == AV_PIX_FMT_BGR32_1)
-        *sdl_blendmode = SDL_BLENDMODE_BLEND;
+        format == AV_PIX_FMT_BGR32_1)           // 这些格式含A(alpha)通道
+        *sdl_blendmode = SDL_BLENDMODE_BLEND;   // alpha混合模式
+
+    // 这代码写的，差点以为for是if的子句
     for (i = 0; i < FF_ARRAY_ELEMS(sdl_texture_format_map) - 1; i++) {
         if (format == sdl_texture_format_map[i].format) {
             *sdl_pix_fmt = sdl_texture_format_map[i].texture_fmt;
@@ -936,19 +944,26 @@ static void get_sdl_pix_fmt_and_blendmode(int format, Uint32 *sdl_pix_fmt, SDL_B
     }
 }
 
+// TODO: 使用滤镜时滤镜输出的格式是renderer的texture格式，是SDL像素格式的子集
+//       不使用滤镜时此函数中只需将FFmpeg像素格式转换为SDL支持的像素格式，这两处差异的本质是什么？
+// 将SDL_Texture装载一帧视频帧数据
 static int upload_texture(SDL_Texture **tex, AVFrame *frame, struct SwsContext **img_convert_ctx) {
     int ret = 0;
     Uint32 sdl_pix_fmt;
     SDL_BlendMode sdl_blendmode;
     // 根据frame中的图像格式(FFmpeg像素格式)，获取对应的SDL像素格式
     get_sdl_pix_fmt_and_blendmode(frame->format, &sdl_pix_fmt, &sdl_blendmode);
-    // 参数tex实际是&is->vid_texture，此处根据得到的SDL像素格式，为&is->vid_texture
+    // 参数tex实际是&is->vid_texture，此处根据得到的SDL像素格式，为&is->vid_texture重新分配内存空间
     if (realloc_texture(tex, sdl_pix_fmt == SDL_PIXELFORMAT_UNKNOWN ? SDL_PIXELFORMAT_ARGB8888 : sdl_pix_fmt, frame->width, frame->height, sdl_blendmode, 0) < 0)
         return -1;
     switch (sdl_pix_fmt) {
-        // frame格式是SDL不支持的格式，则需要进行图像格式转换，转换为目标格式AV_PIX_FMT_BGRA，对应SDL_PIXELFORMAT_BGRA32
+        // frame格式是SDL不支持的格式，则需要进行图像格式转换，转换为目标格式AV_PIX_FMT_BGRA(FFmpeg)，对应SDL_PIXELFORMAT_BGRA32(SDL)
         case SDL_PIXELFORMAT_UNKNOWN:
             /* This should only happen if we are not using avfilter... */
+            // 只有不启用滤镜功能时才需要此处的格式转换，因为一旦启用滤镜功能，滤镜终端(buffersink滤镜)输出的格式一定是SDL支持的格式，
+            // 故不可能执行到此分支，参configure_video_filters()函数实现
+
+            // 若能复用现有SwsContext则复用，否则重新分配一个
             *img_convert_ctx = sws_getCachedContext(*img_convert_ctx,
                 frame->width, frame->height, frame->format, frame->width, frame->height,
                 AV_PIX_FMT_BGRA, sws_flags, NULL, NULL, NULL);
@@ -980,7 +995,7 @@ static int upload_texture(SDL_Texture **tex, AVFrame *frame, struct SwsContext *
                 return -1;
             }
             break;
-        // frame格式对应其他SDL像素格式，不用进行图像格式转换，调用SDL_UpdateTexture()更新SDL texture
+        // frame格式对应其他SDL支持的像素格式，不用进行图像格式转换，调用SDL_UpdateTexture()更新SDL texture
         default:
             if (frame->linesize[0] < 0) {
                 ret = SDL_UpdateTexture(*tex, NULL, frame->data[0] + frame->linesize[0] * (frame->height - 1), -frame->linesize[0]);
@@ -992,17 +1007,18 @@ static int upload_texture(SDL_Texture **tex, AVFrame *frame, struct SwsContext *
     return ret;
 }
 
+// 设置YUV与RGB转换模式，此模式在SDL_RenderCopyEx中会用到
 static void set_sdl_yuv_conversion_mode(AVFrame *frame)
 {
 #if SDL_VERSION_ATLEAST(2,0,8)
     SDL_YUV_CONVERSION_MODE mode = SDL_YUV_CONVERSION_AUTOMATIC;
     if (frame && (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUYV422 || frame->format == AV_PIX_FMT_UYVY422)) {
-        if (frame->color_range == AVCOL_RANGE_JPEG)
+        if (frame->color_range == AVCOL_RANGE_JPEG)     // color_range区分是JPEG(图片)还是MPEG(视频)
             mode = SDL_YUV_CONVERSION_JPEG;
-        else if (frame->colorspace == AVCOL_SPC_BT709)
-            mode = SDL_YUV_CONVERSION_BT709;
+        else if (frame->colorspace == AVCOL_SPC_BT709)  // colorspace是由ISO标准定义的YUV色彩空间类型
+            mode = SDL_YUV_CONVERSION_BT709;            // HDTV
         else if (frame->colorspace == AVCOL_SPC_BT470BG || frame->colorspace == AVCOL_SPC_SMPTE170M || frame->colorspace == AVCOL_SPC_SMPTE240M)
-            mode = SDL_YUV_CONVERSION_BT601;
+            mode = SDL_YUV_CONVERSION_BT601;            // SDTV
     }
     SDL_SetYUVConversionMode(mode);
 #endif
@@ -1060,8 +1076,10 @@ static void video_image_display(VideoState *is)
         }
     }
 
+    // 1. 计算显示区域SDL_Rect的大小
     calculate_display_rect(&rect, is->xleft, is->ytop, is->width, is->height, vp->width, vp->height, vp->sar);
 
+    // 2. 将SDL_Texture装载一帧视频帧数据
     if (!vp->uploaded) {
         if (upload_texture(&is->vid_texture, vp->frame, &is->img_convert_ctx) < 0)
             return;
@@ -1069,7 +1087,9 @@ static void video_image_display(VideoState *is)
         vp->flip_v = vp->frame->linesize[0] < 0;
     }
 
+    // 设置YUV与RGB转换模式，此模式在SDL_RenderCopyEx中会用到
     set_sdl_yuv_conversion_mode(vp->frame);
+    // 将texture中的部分图像(rect部分)拷贝到renderer
     SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
     set_sdl_yuv_conversion_mode(NULL);
     if (sp) {
@@ -1869,6 +1889,7 @@ static int get_video_frame(VideoState *is, AVFrame *frame)
 }
 
 #if CONFIG_AVFILTER
+// 配置并建立滤镜图，此滤镜图可供后续滤镜操作中直接使用
 static int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
                                  AVFilterContext *source_ctx, AVFilterContext *sink_ctx)
 {
@@ -1894,9 +1915,16 @@ static int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
         inputs->pad_idx     = 0;
         inputs->next        = NULL;
 
+        // 将filtergraph描述的滤镜图添加到滤镜图graph中
+        // 调用前：graph包含两个滤镜source_ctx和bsink_ctx
+        // 调用后：filtergraph描述的滤镜图插入到滤镜图graph中，source_ctx连接到filtergraph的输入，
+        //        filtergraph的输出连接到sink_ctx，对filtergraph只进行了解析而不建立内部滤镜间的连接。
+        //        filtergraph与graph间的连接是利用AVFilterInOut inputs和AVFilterInOut outputs连接
+        //        起来的，AVFilterInOut是一个链表，最终可用的连在一起的滤镜图就是通过这个链表串在一起的。
         if ((ret = avfilter_graph_parse_ptr(graph, filtergraph, &inputs, &outputs, NULL)) < 0)
             goto fail;
     } else {
+        // 命令行中滤镜选项为空则直接将sink_ctx连到source_ctx
         if ((ret = avfilter_link(source_ctx, 0, sink_ctx, 0)) < 0)
             goto fail;
     }
@@ -1905,6 +1933,7 @@ static int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
     for (i = 0; i < graph->nb_filters - nb_filters; i++)
         FFSWAP(AVFilterContext*, graph->filters[i], graph->filters[i + nb_filters]);
 
+    // 验证有效性并配置graph中所有格式，建立滤镜间的连接
     ret = avfilter_graph_config(graph, NULL);
 fail:
     avfilter_inout_free(&outputs);
@@ -1925,6 +1954,9 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
     int nb_pix_fmts = 0;
     int i, j;
 
+    // FFmpeg中的像素格式与SDL中的像素格式具有对应关系，如映射表sdl_texture_format_map[]
+    // renderer的texture_formats表示当前renderer支持的texture格式(SDL像素格式)
+    // 此处查表得到renderer的texture_formats(SDL像素格式)对应FFmpeg中的像素格式
     for (i = 0; i < renderer_info.num_texture_formats; i++) {
         for (j = 0; j < FF_ARRAY_ELEMS(sdl_texture_format_map) - 1; j++) {
             if (renderer_info.texture_formats[i] == sdl_texture_format_map[j].texture_fmt) {
@@ -1946,6 +1978,7 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
 
     graph->scale_sws_opts = av_strdup(sws_flags_str);
 
+    // buffersrc_args是buffer滤镜的参数值
     snprintf(buffersrc_args, sizeof(buffersrc_args),
              "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
              frame->width, frame->height, frame->format,
@@ -1954,18 +1987,21 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
     if (fr.num && fr.den)
         av_strlcatf(buffersrc_args, sizeof(buffersrc_args), ":frame_rate=%d/%d", fr.num, fr.den);
 
+    // 为buffer滤镜创建滤镜实例filt_src，并将滤镜实例filt_src添加到滤镜图graph中
     if ((ret = avfilter_graph_create_filter(&filt_src,
                                             avfilter_get_by_name("buffer"),
                                             "ffplay_buffer", buffersrc_args, NULL,
                                             graph)) < 0)
         goto fail;
 
+    // 为buffersink滤镜创建滤镜实例filt_out，并将滤镜实例filt_out添加到滤镜图graph中
     ret = avfilter_graph_create_filter(&filt_out,
                                        avfilter_get_by_name("buffersink"),
                                        "ffplay_buffersink", NULL, NULL, graph);
     if (ret < 0)
         goto fail;
 
+    // 设置filt_out滤镜输出像素格式为当前renderer支持的像素格式列表
     if ((ret = av_opt_set_int_list(filt_out, "pix_fmts", pix_fmts,  AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN)) < 0)
         goto fail;
 
@@ -1973,6 +2009,7 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
 
 /* Note: this macro adds a filter before the lastly added filter, so the
  * processing order of the filters is in reverse */
+// 将名为name值为arg的filter插入filtergraph中last_filter之后，并将新插入的filter与last_filter连接
 #define INSERT_FILT(name, arg) do {                                          \
     AVFilterContext *filt_ctx;                                               \
                                                                              \
@@ -1989,7 +2026,7 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
     last_filter = filt_ctx;                                                  \
 } while (0)
 
-    if (autorotate) {
+    if (autorotate) {   // 自动旋转
         double theta  = get_rotation(is->video_st);
 
         if (fabs(theta - 90) < 1.0) {
@@ -2006,6 +2043,7 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
         }
     }
 
+    // 配置并建立滤镜图，此滤镜图可供后续滤镜操作中直接使用
     if ((ret = configure_filtergraph(graph, vfilters, filt_src, last_filter)) < 0)
         goto fail;
 
