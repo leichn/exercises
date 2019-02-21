@@ -3,6 +3,6 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LocalDebuggerEnvironment>PATH=..\libs_win\runtime; $(LocalDebuggerEnvironment)</LocalDebuggerEnvironment>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
-    <LocalDebuggerCommandArguments>-vf transpose=cclock ..\..\..\resources\video\cuc.flv</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>-vf transpose=cclock,pad=iw+80:ih:40 ..\..\..\resources\video\cuc.flv</LocalDebuggerCommandArguments>
   </PropertyGroup>
 </Project>

@@ -944,8 +944,19 @@ static void get_sdl_pix_fmt_and_blendmode(int format, Uint32 *sdl_pix_fmt, SDL_B
     }
 }
 
-// TODO: 使用滤镜时滤镜输出的格式是renderer的texture格式，是SDL像素格式的子集
-//       不使用滤镜时此函数中只需将FFmpeg像素格式转换为SDL支持的像素格式，这两处差异的本质是什么？
+// TODO: 使用滤镜时滤镜输出的格式是renderer的texture格式(texture中像素格式)，是SDL支持的像素格式的子集
+//       不使用滤镜时此函数中只需将FFmpeg像素格式转换为SDL支持的像素格式，这两处方式的差异是什么？
+// 试答：看一下SDL_CreateTexture()源码，调用了IsSupportedFormat()，就是判断入参format(像素格式)是否在
+//       renderered.texture_format[]中，若在就直接使用此格式创建Texture。否则，调用
+//       SDL_CreateTexture(renderer,
+//                         GetClosestSupportedFormat(renderer, format),
+//                         access, w, h);
+//       找到renderered.texture_format[]与入参format最接近的格式创建Texture
+//       推测：创建的Texture的实际像素格式总是在renderered.texture_format[]中，而待显示的视频帧的像素
+//             格式(FFmpeg)对应SDL支持的像素格式，显示时SDL可将视频帧像素格式转换为Texture像素格式。
+//             即不使用滤镜时，经过两次转换，一：是图像格式转换确保格式被SDL支持，二：SDL显示时进行进一
+//             步转换以使格式能被Texture支持，缺了这任何一步图像都是无法显示的。而启用滤镜后，滤镜输出的
+//             像素格式直接设置为Texture支持的格式，所以不需要第二步转换。
 // 将SDL_Texture装载一帧视频帧数据
 static int upload_texture(SDL_Texture **tex, AVFrame *frame, struct SwsContext **img_convert_ctx) {
     int ret = 0;
@@ -2287,6 +2298,7 @@ static int video_thread(void *arg)
                    (const char *)av_x_if_null(av_get_pix_fmt_name(frame->format), "none"), is->viddec.pkt_serial);
             avfilter_graph_free(&graph);
             graph = avfilter_graph_alloc();
+            // 如果滤镜未曾配置过则配置，vfilters_list存的是滤镜描述字符串，形如"transpose=cclock,pad=iw+20:ih"
             if ((ret = configure_video_filters(graph, is, vfilters_list ? vfilters_list[is->vfilter_idx] : NULL, frame)) < 0) {
                 SDL_Event event;
                 event.type = FF_QUIT_EVENT;
@@ -2304,6 +2316,7 @@ static int video_thread(void *arg)
             frame_rate = av_buffersink_get_frame_rate(filt_out);
         }
 
+        // 将frame送入滤镜输入端
         ret = av_buffersrc_add_frame(filt_in, frame);
         if (ret < 0)
             goto the_end;
@@ -2311,6 +2324,7 @@ static int video_thread(void *arg)
         while (ret >= 0) {
             is->frame_last_returned_time = av_gettime_relative() / 1000000.0;
 
+            // 从滤镜输出端取frame
             ret = av_buffersink_get_frame_flags(filt_out, frame, 0);
             if (ret < 0) {
                 if (ret == AVERROR_EOF)
