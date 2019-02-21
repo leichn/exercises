@@ -42,9 +42,8 @@ typedef struct {
     SDL_Window      *sdl_window; 
     SDL_Renderer    *sdl_renderer;
     SDL_Texture     *sdl_texture;
-    SDL_Rect        *sdl_rect;
-    AVFrame         *disp_frame;
     struct SwsContext *sws_ctx;
+    bool            win_opened;
 }   disp_ctx_t;
 
 typedef struct {
@@ -146,149 +145,53 @@ static int init_displaying(const input_ctx_t *ictx, disp_ctx_t *dctx)
 {
     int ret;
 
-    // A1. 分配AVFrame
-    // A1.1 分配AVFrame结构，注意并不分配data buffer(即AVFrame.*data[])
-    dctx->disp_frame = av_frame_alloc();
-    if (dctx->disp_frame == NULL)
-    {
-        printf("av_frame_alloc() for frame for displaying failed\n");
-        ret = -1;
-        goto exit0;
-    }
-
-    // A1.2 为AVFrame.*data[]手工分配缓冲区，用于存储sws_scale()中目的帧视频数据
-    int buf_size = 
-    av_image_get_buffer_size(AV_PIX_FMT_YUV420P, 
-                             ictx->dec_ctx->width, 
-                             ictx->dec_ctx->height, 
-                             1
-                            );
-    // buffer将作为p_frm_yuv的视频数据缓冲区
-    uint8_t *buffer = (uint8_t *)av_malloc(buf_size);
-    if (buffer == NULL)
-    {
-        printf("av_malloc() for buffer failed\n");
-        ret = -1;
-        goto exit1;
-    }
-    // 使用给定参数设定disp_frame->data和disp_frame->linesize
-    ret = av_image_fill_arrays(dctx->disp_frame->data,      // dst data[]
-                               dctx->disp_frame->linesize,  // dst linesize[]
-                               buffer,                      // src buffer
-                               AV_PIX_FMT_YUV420P,          // pixel format
-                               ictx->dec_ctx->width,        // width
-                               ictx->dec_ctx->height,       // height
-                               1                            // align
-                               );
-    if (ret < 0)
-    {
-        printf("av_image_fill_arrays() failed %d\n", ret);
-        ret = -1;
-        goto exit2;
-    }
-
-    // A2. 初始化SWS context，用于后续图像转换
-    //     此处第6个参数使用的是FFmpeg中的像素格式，对比参考注释B4
-    //     FFmpeg中的像素格式AV_PIX_FMT_YUV420P对应SDL中的像素格式SDL_PIXELFORMAT_IYUV
-    //     如果解码后得到图像的不被SDL支持，不进行图像转换的话，SDL是无法正常显示图像的
-    //     如果解码后得到图像的能被SDL支持，则不必进行图像转换
-    //     这里为了编码简便，统一转换为SDL支持的格式AV_PIX_FMT_YUV420P==>SDL_PIXELFORMAT_IYUV
-    dctx->sws_ctx = 
-    sws_getContext(ictx->dec_ctx->width,    // src width
-                   ictx->dec_ctx->height,   // src height
-                   ictx->dec_ctx->pix_fmt,  // src format
-                   ictx->dec_ctx->width,    // dst width
-                   ictx->dec_ctx->height,   // dst height
-                   AV_PIX_FMT_YUV420P,      // dst format
-                   SWS_BICUBIC,             // flags
-                   NULL,                    // src filter
-                   NULL,                    // dst filter
-                   NULL                     // param
-                  );
-    if (dctx->sws_ctx == NULL)
-    {
-        printf("sws_getContext() failed\n");
-        ret = -1;
-        goto exit3;
-    }
-
-    // B1. 初始化SDL子系统：缺省(事件处理、文件IO、线程)、视频、音频、定时器
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER))
-    {  
-        printf("SDL_Init() failed: %s\n", SDL_GetError()); 
-        ret = -1;
-        goto exit3;
-    }
-
-    // B2. 创建SDL窗口，SDL 2.0支持多窗口
-    //     SDL_Window即运行程序后弹出的视频窗口，同SDL 1.x中的SDL_Surface
+    // 创建SDL窗口，SDL 2.0支持多窗口
+    // SDL_Window即运行程序后弹出的视频窗口，同SDL 1.x中的SDL_Surface
+    int default_width = 640;
+    int default_height = 480;
     dctx->sdl_window = 
     SDL_CreateWindow("simple ffplayer with video filter", 
-                     SDL_WINDOWPOS_UNDEFINED,// 不关心窗口X坐标
-                     SDL_WINDOWPOS_UNDEFINED,// 不关心窗口Y坐标
-                     ictx->dec_ctx->width, 
-                     ictx->dec_ctx->height,
-                     SDL_WINDOW_OPENGL
+                     SDL_WINDOWPOS_UNDEFINED,   // 不关心窗口X坐标
+                     SDL_WINDOWPOS_UNDEFINED,   // 不关心窗口Y坐标
+                     default_width,
+                     default_height,
+                     SDL_WINDOW_HIDDEN          // 窗口先不显示
                     );
 
     if (dctx->sdl_window == NULL)
     {  
-        printf("SDL_CreateWindow() failed: %s\n", SDL_GetError());  
+        av_log(NULL, AV_LOG_ERROR, "SDL_CreateWindow() failed: %s\n", SDL_GetError());  
         ret = -1;
-        goto exit4;
+        goto exit1;
     }
 
-    // B3. 创建SDL_Renderer
-    //     SDL_Renderer：渲染器
-    dctx->sdl_renderer = SDL_CreateRenderer(dctx->sdl_window, -1, 0);
+    // 创建SDL_Renderer
+    // SDL_Renderer：渲染器
+    dctx->sdl_renderer = 
+    SDL_CreateRenderer(dctx->sdl_window, -1, 
+                       SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (dctx->sdl_renderer == NULL)
-    {  
-        printf("SDL_CreateRenderer() failed: %s\n", SDL_GetError());  
-        ret = -1;
-        goto exit4;
+    {
+        av_log(NULL, AV_LOG_WARNING, "Failed to initialize a hardware accelerated renderer: %s\n", SDL_GetError());
+        dctx->sdl_renderer = SDL_CreateRenderer(dctx->sdl_window, -1, 0);     
+        if (dctx->sdl_renderer == NULL)
+        {  
+            av_log(NULL, AV_LOG_ERROR, "SDL_CreateRenderer() failed: %s\n", SDL_GetError());  
+            ret = -1;
+            goto exit1;
+        }
     }
-
-    // B4. 创建SDL_Texture
-    //     一个SDL_Texture对应一帧YUV数据，同SDL 1.x中的SDL_Overlay
-    //     此处第2个参数使用的是SDL中的像素格式，对比参考注释A7
-    //     FFmpeg中的像素格式AV_PIX_FMT_YUV420P对应SDL中的像素格式SDL_PIXELFORMAT_IYUV
-    dctx->sdl_texture = 
-    SDL_CreateTexture(dctx->sdl_renderer, 
-                      SDL_PIXELFORMAT_IYUV, 
-                      SDL_TEXTUREACCESS_STREAMING,
-                      ictx->dec_ctx->width,
-                      ictx->dec_ctx->height
-                     );
-    if (dctx->sdl_texture == NULL)
-    {  
-        printf("SDL_CreateTexture() failed: %s\n", SDL_GetError());  
-        ret = -1;
-        goto exit4;
-    }
-
-    // B5. 构造SDL_Rect
-    dctx->sdl_rect->x = 0;
-    dctx->sdl_rect->y = 0;
-    dctx->sdl_rect->w = ictx->dec_ctx->width;
-    dctx->sdl_rect->h = ictx->dec_ctx->height;
 
     return 0;
 
-exit4:
-    SDL_Quit();
-exit3:
-    sws_freeContext(dctx->sws_ctx); 
-exit2:
-    av_free(buffer);
 exit1:
-    av_frame_free(&dctx->disp_frame);
+    SDL_Quit();
 exit0:
     return ret;
 }
 
 static deinit_displaying(disp_ctx_t *dctx)
 {
-    av_frame_free(&dctx->disp_frame);
     sws_freeContext(dctx->sws_ctx);
     SDL_Quit();
 
@@ -398,7 +301,7 @@ static int init_filters(const char *filters_descr, const input_ctx_t *ictx, filt
     // 调用后：filters_descr描述的滤镜图插入到filter_graph中，buffersrc_ctx连接到filters_descr
     //         的输入，filters_descr的输出连接到buffersink_ctx，filters_descr只进行了解析而不
     //         建立内部滤镜间的连接。filters_desc与filter_graph间的连接是利用AVFilterInOut inputs
-    //         和AVFilterInOut inputs连接起来的，AVFilterInOut是一个链表，最终可用的连在一起的
+    //         和AVFilterInOut outputs连接起来的，AVFilterInOut是一个链表，最终可用的连在一起的
     //         滤镜链/滤镜图就是通过这个链表串在一起的。
     ret = avfilter_graph_parse_ptr(fctx->filter_graph, filters_descr,
                                    &inputs, &outputs, NULL);
@@ -481,47 +384,253 @@ static int filtering_video_frame(const filter_ctx_t *fctx, AVFrame *frame_in, AV
     return 1;
 }
 
-static int display_video_frame(const AVFrame *frame, disp_ctx_t *dctx)
-{
-    // A1. 图像转换：p_frm_raw->data ==> p_frm_yuv->data
-    // 将源图像中一片连续的区域经过处理后更新到目标图像对应区域，处理的图像区域必须逐行连续
-    // plane: 如YUV有Y、U、V三个plane，RGB有R、G、B三个plane
-    // slice: 图像中一片连续的行，必须是连续的，顺序由顶部到底部或由底部到顶部
-    // stride/pitch: 一行图像所占的字节数，Stride=BytesPerPixel*Width+Padding，注意对齐
-    // AVFrame.*data[]: 每个数组元素指向对应plane
-    // AVFrame.linesize[]: 每个数组元素表示对应plane中一行图像所占的字节数
-    sws_scale(dctx->sws_ctx,                            // sws context
-              (const uint8_t *const *)frame->data,      // src slice
-              frame->linesize,                          // src stride
-              0,                                        // src slice y
-              frame->height,                            // src slice height
-              dctx->disp_frame->data,                   // dst planes
-              dctx->disp_frame->linesize                // dst strides
-              );
-    
-    // B7. 使用新的YUV像素数据更新SDL_Rect
-    SDL_UpdateYUVTexture(dctx->sdl_texture,             // sdl texture
-                         dctx->sdl_rect,                // sdl rect
-                         dctx->disp_frame->data[0],     // y plane
-                         dctx->disp_frame->linesize[0], // y pitch
-                         dctx->disp_frame->data[1],     // u plane
-                         dctx->disp_frame->linesize[1], // u pitch
-                         dctx->disp_frame->data[2],     // v plane
-                         dctx->disp_frame->linesize[2]  // v pitch
-                         );
-    
-    // B8. 使用特定颜色清空当前渲染目标
-    SDL_RenderClear(dctx->sdl_renderer);
-    // B9. 使用部分图像数据(texture)更新当前渲染目标
-    SDL_RenderCopy(dctx->sdl_renderer,                  // sdl renderer
-                   dctx->sdl_texture,                   // sdl texture
-                   NULL,                                // src rect, if NULL copy texture
-                   dctx->sdl_rect                       // dst rect
-                   );
-    
-    // B10. 执行渲染，更新屏幕显示
-    SDL_RenderPresent(dctx->sdl_renderer);
 
+static int open_sdl_window(disp_ctx_t *dctx, int w, int h)
+{
+    SDL_SetWindowTitle(dctx->sdl_window, "simple ffplayer with video filter");
+    SDL_SetWindowSize(dctx->sdl_window, w, h);
+    SDL_SetWindowPosition(dctx->sdl_window, 0, 0);
+    SDL_ShowWindow(dctx->sdl_window);
+
+    dctx->win_opened = true;
+
+    return 0;
+}
+
+// 若有必要(显示参数有变或texture无效)则重建texture
+static int realloc_texture(SDL_Renderer *renderer, SDL_Texture **texture, 
+                           uint32_t new_format, int new_width, int new_height,
+                           SDL_BlendMode blendmode, int init_texture)
+{
+    uint32_t format;
+    int access, w, h;
+    // 1) texture未曾建立 2) 查询texture属性无效 3) 宽、高、像素格式有变化，这三种情况下需要重建texture
+    if (!*texture || 
+        SDL_QueryTexture(*texture, &format, &access, &w, &h) < 0 || 
+        new_width != w || new_height != h || new_format != format)
+    {
+        void *pixels;
+        int pitch;
+        if (*texture)
+        {
+            SDL_DestroyTexture(*texture);
+        }
+        if (!(*texture = SDL_CreateTexture(renderer, new_format, SDL_TEXTUREACCESS_STREAMING, new_width, new_height)))
+        {
+            return -1;
+        }
+        if (SDL_SetTextureBlendMode(*texture, blendmode) < 0)
+        {
+            return -1;
+        }
+        if (init_texture)
+        {
+            if (SDL_LockTexture(*texture, NULL, &pixels, &pitch) < 0)
+            {
+                return -1;
+            }
+            memset(pixels, 0, pitch * new_height);
+            SDL_UnlockTexture(*texture);
+        }
+        av_log(NULL, AV_LOG_VERBOSE, "Created %dx%d texture with %s.\n", new_width, new_height, SDL_GetPixelFormatName(new_format));
+    }
+    return 0;
+}
+
+// 设置YUV与RGB转换模式，此模式在SDL_RenderCopyEx中会用到
+static void set_sdl_yuv_conversion_mode(AVFrame *frame)
+{
+#if SDL_VERSION_ATLEAST(2,0,8)
+    SDL_YUV_CONVERSION_MODE mode = SDL_YUV_CONVERSION_AUTOMATIC;
+    if (frame && (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUYV422 || frame->format == AV_PIX_FMT_UYVY422)) {
+        if (frame->color_range == AVCOL_RANGE_JPEG)     // color_range区分是JPEG(图片)还是MPEG(视频)
+            mode = SDL_YUV_CONVERSION_JPEG;
+        else if (frame->colorspace == AVCOL_SPC_BT709)  // colorspace是由ISO标准定义的YUV色彩空间类型
+            mode = SDL_YUV_CONVERSION_BT709;            // HDTV
+        else if (frame->colorspace == AVCOL_SPC_BT470BG || frame->colorspace == AVCOL_SPC_SMPTE170M || frame->colorspace == AVCOL_SPC_SMPTE240M)
+            mode = SDL_YUV_CONVERSION_BT601;            // SDTV
+    }
+    SDL_SetYUVConversionMode(mode);
+#endif
+}
+
+typedef struct {
+    enum AVPixelFormat format;
+    int texture_fmt;
+}   av_sdl_fmt_map_t;
+
+static const av_sdl_fmt_map_t sdl_texture_format_map[] = {
+    { AV_PIX_FMT_RGB8,           SDL_PIXELFORMAT_RGB332 },
+    { AV_PIX_FMT_RGB444,         SDL_PIXELFORMAT_RGB444 },
+    { AV_PIX_FMT_RGB555,         SDL_PIXELFORMAT_RGB555 },
+    { AV_PIX_FMT_BGR555,         SDL_PIXELFORMAT_BGR555 },
+    { AV_PIX_FMT_RGB565,         SDL_PIXELFORMAT_RGB565 },
+    { AV_PIX_FMT_BGR565,         SDL_PIXELFORMAT_BGR565 },
+    { AV_PIX_FMT_RGB24,          SDL_PIXELFORMAT_RGB24 },
+    { AV_PIX_FMT_BGR24,          SDL_PIXELFORMAT_BGR24 },
+    { AV_PIX_FMT_0RGB32,         SDL_PIXELFORMAT_RGB888 },
+    { AV_PIX_FMT_0BGR32,         SDL_PIXELFORMAT_BGR888 },
+    { AV_PIX_FMT_NE(RGB0, 0BGR), SDL_PIXELFORMAT_RGBX8888 },
+    { AV_PIX_FMT_NE(BGR0, 0RGB), SDL_PIXELFORMAT_BGRX8888 },
+    { AV_PIX_FMT_RGB32,          SDL_PIXELFORMAT_ARGB8888 },
+    { AV_PIX_FMT_RGB32_1,        SDL_PIXELFORMAT_RGBA8888 },
+    { AV_PIX_FMT_BGR32,          SDL_PIXELFORMAT_ABGR8888 },
+    { AV_PIX_FMT_BGR32_1,        SDL_PIXELFORMAT_BGRA8888 },
+    { AV_PIX_FMT_YUV420P,        SDL_PIXELFORMAT_IYUV },
+    { AV_PIX_FMT_YUYV422,        SDL_PIXELFORMAT_YUY2 },
+    { AV_PIX_FMT_UYVY422,        SDL_PIXELFORMAT_UYVY },
+    { AV_PIX_FMT_NONE,           SDL_PIXELFORMAT_UNKNOWN },
+};
+
+
+
+// 获取输入参数format(FFmpeg像素格式)在SDL中的像素格式，取到的SDL像素格式存在输出参数sdl_pix_fmt中
+static void get_sdl_pix_fmt_and_blendmode(int format, uint32_t *sdl_pix_fmt, SDL_BlendMode *sdl_blendmode)
+{
+    int i;
+    *sdl_blendmode = SDL_BLENDMODE_NONE;
+    *sdl_pix_fmt = SDL_PIXELFORMAT_UNKNOWN;
+    if (format == AV_PIX_FMT_RGB32   ||
+        format == AV_PIX_FMT_RGB32_1 ||
+        format == AV_PIX_FMT_BGR32   ||
+        format == AV_PIX_FMT_BGR32_1)           // 这些格式含A(alpha)通道
+    {
+        *sdl_blendmode = SDL_BLENDMODE_BLEND;   // alpha混合模式
+    }
+        
+    for (i = 0; i < FF_ARRAY_ELEMS(sdl_texture_format_map) - 1; i++)
+    {
+        if (format == sdl_texture_format_map[i].format)
+        {
+            *sdl_pix_fmt = sdl_texture_format_map[i].texture_fmt;
+            return;
+        }
+    }
+}
+
+static int upload_texture(SDL_Renderer *renderer, SDL_Texture **tex, AVFrame *frame, struct SwsContext **sws_ctx)
+{
+    int ret = 0;
+    uint32_t sdl_pix_fmt;
+    SDL_BlendMode sdl_blendmode;
+    
+    // 根据frame中的图像格式(FFmpeg像素格式)，获取对应的SDL像素格式
+    get_sdl_pix_fmt_and_blendmode(frame->format, &sdl_pix_fmt, &sdl_blendmode);
+    
+    // 参数tex实际是&is->vid_texture，此处根据得到的SDL像素格式，为&is->vid_texture重新分配内存空间
+    uint32_t new_fmt = (sdl_pix_fmt == SDL_PIXELFORMAT_UNKNOWN) ? SDL_PIXELFORMAT_ARGB8888 : sdl_pix_fmt;
+    if (realloc_texture(renderer, tex, new_fmt, frame->width, frame->height, sdl_blendmode, 0) < 0)
+    {
+        return -1;
+    }
+    
+    switch (sdl_pix_fmt)
+    {
+        // frame格式是SDL不支持的格式，则需要进行图像格式转换，转换为目标格式AV_PIX_FMT_BGRA(FFmpeg)，对应SDL_PIXELFORMAT_BGRA32(SDL)
+        case SDL_PIXELFORMAT_UNKNOWN:
+            /* This should only happen if we are not using avfilter... */
+            // 若能复用现有SwsContext则复用，否则重新分配一个
+            *sws_ctx = 
+            sws_getCachedContext(*sws_ctx,
+                                 frame->width, frame->height, frame->format, frame->width, frame->height,
+                                 AV_PIX_FMT_BGRA, SWS_BICUBIC, NULL, NULL, NULL);
+            if (*sws_ctx != NULL)
+            {
+                uint8_t *pixels[4];
+                int pitch[4];
+                if (!SDL_LockTexture(*tex, NULL, (void **)pixels, pitch))
+                {
+                    sws_scale(*sws_ctx, (const uint8_t * const *)frame->data, frame->linesize,
+                              0, frame->height, pixels, pitch);
+                    SDL_UnlockTexture(*tex);
+                }
+            }
+            else
+            {
+                av_log(NULL, AV_LOG_FATAL, "Cannot initialize the conversion context\n");
+                ret = -1;
+            }
+            break;
+            
+        // frame格式对应SDL_PIXELFORMAT_IYUV，不用进行图像格式转换，调用SDL_UpdateYUVTexture()更新SDL texture
+        case SDL_PIXELFORMAT_IYUV:
+            if (frame->linesize[0] > 0 && frame->linesize[1] > 0 && frame->linesize[2] > 0)
+            {
+                int ypitch = frame->linesize[0];
+                int upitch = frame->linesize[1];
+                int vpitch = frame->linesize[2];
+                uint8_t *yplane = frame->data[0];
+                uint8_t *uplane = frame->data[1];
+                uint8_t *vplane = frame->data[2];                
+                ret = SDL_UpdateYUVTexture(*tex, NULL, yplane, ypitch, uplane, upitch, vplane, vpitch);
+            }
+            else if (frame->linesize[0] < 0 && frame->linesize[1] < 0 && frame->linesize[2] < 0)
+            {
+                int ypitch = -frame->linesize[0];
+                int upitch = -frame->linesize[1];
+                int vpitch = -frame->linesize[2];
+                uint8_t *yplane = frame->data[0] + frame->linesize[0] * (frame->height - 1);
+                uint8_t *uplane = frame->data[1] + frame->linesize[1] * (AV_CEIL_RSHIFT(frame->height, 1) - 1);
+                uint8_t *vplane = frame->data[2] + frame->linesize[2] * (AV_CEIL_RSHIFT(frame->height, 1) - 1);
+                ret = SDL_UpdateYUVTexture(*tex, NULL, yplane, ypitch, uplane, upitch, vplane, vpitch);
+            }
+            else
+            {
+                av_log(NULL, AV_LOG_ERROR, "Mixed negative and positive linesizes are not supported.\n");
+                return -1;
+            }
+            break;
+            
+        // frame格式对应其他SDL支持的像素格式，不用进行图像格式转换，调用SDL_UpdateTexture()更新SDL texture
+        default:
+            if (frame->linesize[0] < 0)
+            {
+                ret = SDL_UpdateTexture(*tex, NULL, frame->data[0] + frame->linesize[0] * (frame->height - 1), -frame->linesize[0]);
+            }
+            else
+            {
+                ret = SDL_UpdateTexture(*tex, NULL, frame->data[0], frame->linesize[0]);
+            }
+            break;
+    }
+    return ret;
+}
+
+
+static void video_image_display(disp_ctx_t *dctx, AVFrame *frame)
+{
+    // 1. 计算显示区域SDL_Rect的大小
+    SDL_Rect rect;
+    rect.x = 0;
+    rect.y = 0;
+    rect.w = frame->width;
+    rect.h = frame->height;
+
+    // 2. 使用一帧视频帧数据更新SDL_Texture
+    if (upload_texture(dctx->sdl_renderer, &dctx->sdl_texture, frame, &dctx->sws_ctx) < 0)
+    {
+        return;
+    }
+
+    // 设置YUV与RGB转换模式，此模式在SDL_RenderCopyEx中会用到
+    set_sdl_yuv_conversion_mode(frame);
+    // 将texture中的部分图像(rect部分)拷贝到renderer
+    SDL_RenderCopyEx(dctx->sdl_renderer, dctx->sdl_texture, NULL, &rect, 0, NULL, 0);
+    set_sdl_yuv_conversion_mode(NULL);
+}
+
+/* display the current picture, if any */
+static void display_video_frame(disp_ctx_t *dctx, AVFrame *frame)
+{
+    if (!dctx->win_opened)
+    {
+        open_sdl_window(dctx, frame->width, frame->height);
+    }
+
+    SDL_SetRenderDrawColor(dctx->sdl_renderer, 0, 0, 0, 255);
+    SDL_RenderClear(dctx->sdl_renderer);
+    video_image_display(dctx, frame);
+    SDL_RenderPresent(dctx->sdl_renderer);
 }
 
 // test as:
@@ -534,7 +643,16 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    int ret;
+    int ret = 0;
+
+    // 初始化SDL子系统：缺省(事件处理、文件IO、线程)、视频、音频、定时器
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_EVENTS))
+    {  
+        av_log(NULL, AV_LOG_ERROR, "SDL_Init() failed: %s\n", SDL_GetError()); 
+        ret = -1;
+        goto exit0;
+    }
+
     input_ctx_t in_ctx = { NULL, NULL, -1, 0};
     ret = open_input(argv[1], &in_ctx);
     if (ret < 0)
@@ -549,8 +667,7 @@ int main(int argc, char *argv[])
         goto exit1;
     }
 
-    SDL_Rect sdl_rect = {0, 0, 0, 0};
-    disp_ctx_t disp_ctx = {NULL, NULL, NULL, &sdl_rect, NULL, NULL};
+    disp_ctx_t disp_ctx = {NULL, NULL, NULL, NULL, false};
     ret = init_displaying(&in_ctx, &disp_ctx);
     if (ret < 0)
     {
@@ -601,11 +718,16 @@ int main(int argc, char *argv[])
         }
 
         ret = decode_video_frame(in_ctx.dec_ctx, &packet, frame);
-        if (ret < 0)
+        if (ret == 0)
+        {
+            continue;
+        }
+        else if (ret < 0)
         {
             goto exit4;
         }
 
+        #if 0
         ret = filtering_video_frame(&filter_ctx, frame, filt_frame);
         if (ret < 0)
         {
@@ -615,12 +737,8 @@ int main(int argc, char *argv[])
         {
             p_frame = filt_frame;
         }
-
-        ret = display_video_frame(p_frame, &disp_ctx);
-        if (ret < 0)
-        {
-            goto exit4;
-        }
+        #endif
+        display_video_frame(&disp_ctx, frame);
         
         av_frame_unref(filt_frame);
         av_frame_unref(frame);
@@ -635,7 +753,7 @@ exit3:
 exit2:
     deinit_filters(&filter_ctx);
 exit1:
-    close_input(&in_ctx);;
+    close_input(&in_ctx);
 exit0:
     return ret;
 }
