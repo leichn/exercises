@@ -2,16 +2,10 @@
  * ffplayer.c
  *
  * history:
- *   2018-11-27 - [lei]     Create file: a simplest ffmpeg player
- *   2018-11-29 - [lei]     Refresh decoding thread with SDL event 
+ *   2019-02-20 - [lei]     Create file
  *
  * details:
- *   A simple ffmpeg player.
- *
- * refrence:
- *   1. https://blog.csdn.net/leixiaohua1020/article/details/38868499
- *   2. http://dranger.com/ffmpeg/ffmpegtutorial_all.html#tutorial01.html
- *   3. http://dranger.com/ffmpeg/ffmpegtutorial_all.html#tutorial02.html
+ *   A simple ffmpeg player with video filter.
  *******************************************************************************/
 
 #include <stdio.h>
@@ -81,7 +75,12 @@ static int open_input(const char *url, input_ctx_t *ictx)
     int ret;
     AVCodec *dec;
 
-    ret = avformat_open_input(&(ictx->fmt_ctx), url, NULL, NULL);
+    AVDictionary *avdict = NULL;
+    if (strcmp(url, "testsrc") == 0)    // use test pattern
+    {
+        av_dict_set(&avdict, "f", "lavfi", 0);
+    }
+    ret = avformat_open_input(&(ictx->fmt_ctx), url, NULL, &avdict);
     if (ret < 0)
     {
         av_log(NULL, AV_LOG_ERROR, "Cannot open input file\n");
@@ -209,7 +208,6 @@ static int init_filters(const char *filters_descr, const input_ctx_t *ictx, filt
     AVFilterInOut *outputs = avfilter_inout_alloc();
     AVFilterInOut *inputs  = avfilter_inout_alloc();
     AVRational time_base = ictx->fmt_ctx->streams[ictx->video_idx]->time_base;
-    //enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_GRAY8, AV_PIX_FMT_NONE };
 
     // 分配一个滤镜图filter_graph
     fctx->filter_graph = avfilter_graph_alloc();
@@ -248,7 +246,8 @@ static int init_filters(const char *filters_descr, const input_ctx_t *ictx, filt
         goto end;
     }
 
-#if 0
+#if 0   // 因为后面显示视频帧时有sws_scale()进行图像格式转换，帮此处不设置滤镜输出格式也可
+    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUYV422, AV_PIX_FMT_NONE };
     // 设置输出像素格式为
     ret = av_opt_set_int_list(buffersink_ctx, "pix_fmts", pix_fmts,
                               AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
@@ -634,7 +633,7 @@ static void display_video_frame(disp_ctx_t *dctx, AVFrame *frame)
 }
 
 // test as:
-// ./ffplayer testsrc -vf transpose=cclock
+// ./ffmpeg_vfilter testsrc -vf transpose=cclock,pad=iw+80:ih:40 
 int main(int argc, char *argv[])
 {
     if (argc != 4)
@@ -700,7 +699,7 @@ int main(int argc, char *argv[])
     while (1)
     {
         SDL_WaitEvent(&sdl_event);
-        if (sdl_event.type == SDL_USEREVENT_REFRESH)
+        if (sdl_event.type != SDL_USEREVENT_REFRESH)
         {
             continue;
         }
@@ -727,18 +726,17 @@ int main(int argc, char *argv[])
             goto exit4;
         }
 
-        #if 0
         ret = filtering_video_frame(&filter_ctx, frame, filt_frame);
+        if (ret == 0)
+        {
+            continue;
+        }
         if (ret < 0)
         {
-            p_frame = frame;
+            goto exit4;
         }
-        else
-        {
-            p_frame = filt_frame;
-        }
-        #endif
-        display_video_frame(&disp_ctx, frame);
+
+        display_video_frame(&disp_ctx, filt_frame);
         
         av_frame_unref(filt_frame);
         av_frame_unref(frame);
