@@ -111,14 +111,14 @@ static int init_filters(const char *filters_descr)
     }
 
     /* buffer video source: the decoded frames from the decoder will be inserted here. */
+    // args是buffersrc滤镜的参数
     snprintf(args, sizeof(args),
             "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
             dec_ctx->width, dec_ctx->height, dec_ctx->pix_fmt,
             time_base.num, time_base.den,
             dec_ctx->sample_aspect_ratio.num, dec_ctx->sample_aspect_ratio.den);
-    // 根据滤镜buffersrc、args、NULL三个参数创建滤镜实例buffersrc_ctx
-    // 这个新创建的滤镜实例buffersrc_ctx命名为"in"
-    // 将新创建的滤镜实例添加到滤镜图filter_graph中
+    // 为buffersrc滤镜创建滤镜实例buffersrc_ctx，命名为"in"
+    // 将新创建的滤镜实例buffersrc_ctx添加到滤镜图filter_graph中
     ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in",
                                        args, NULL, filter_graph);
     if (ret < 0) {
@@ -127,9 +127,8 @@ static int init_filters(const char *filters_descr)
     }
 
     /* buffer video sink: to terminate the filter chain. */
-    // 根据滤镜buffersink、NULL、NULL三个参数创建滤镜实例buffersink_ctx
-    // 这个新创建的滤镜实例buffersink_ctx命名为"out"
-    // 将新创建的滤镜实例添加到滤镜图filter_graph中
+    // 为buffersink滤镜创建滤镜实例buffersink_ctx，命名为"out"
+    // 将新创建的滤镜实例buffersink_ctx添加到滤镜图filter_graph中
     ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out",
                                        NULL, NULL, filter_graph);
     if (ret < 0) {
@@ -137,7 +136,7 @@ static int init_filters(const char *filters_descr)
         goto end;
     }
 
-    // 设置输出像素格式为
+    // 设置输出像素格式为pix_fmts[]中指定的格式(如果要用SDL显示，则这些格式应是SDL支持格式)
     ret = av_opt_set_int_list(buffersink_ctx, "pix_fmts", pix_fmts,
                               AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
     if (ret < 0) {
