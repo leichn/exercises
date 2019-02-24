@@ -10,53 +10,47 @@
 
 #include <stdio.h>
 #include <stdbool.h>
-
-#include <libavfilter/avfilter.h>
-#include <libavfilter/buffersink.h>
-#include <libavfilter/buffersrc.h>
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_video.h>
-#include <SDL2/SDL_render.h>
-#include <SDL2/SDL_rect.h>
-
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
 #include "video_play.h"
 #include "video_filter.h"
 
+#include <SDL2/SDL.h>
+
 #define SDL_USEREVENT_REFRESH  (SDL_USEREVENT + 1)
 
-static bool s_playing_exit = false;
-static bool s_playing_pause = false;
+// 通过interval参数传入当前的timer interval，返回下一次timer的interval，返回0表示取消定时器
+// 定时器超时时间到时调用此回调函数，产生FF_REFRESH_EVENT事件，添加到事件队列
+static uint32_t sdl_time_cb_refresh(uint32_t interval, void *opaque)
+{
+    SDL_Event sdl_event;
+    sdl_event.type = SDL_USEREVENT_REFRESH;
+    SDL_PushEvent(&sdl_event);  // 将事件添加到事件队列，此队列可读可写
+    return interval;            // 返回0表示停止定时器 
+}
 
-typedef struct {
-    AVFilterContext *bufsink_ctx;
-    AVFilterContext *bufsrc_ctx;
-    AVFilterGraph   *filter_graph;
-}   filter_ctx_t;
 
-typedef struct {
-    int width;
-    int height;
-    enum AVPixelFormat pix_fmt;
-    AVRational time_base;
-    AVRational sar;
-    AVRational frame_rate;
-}   input_avopt_t;
-
-// 探测
-static int probe_testsrc_format(const char *url, input_avopt_t *avopt)
+#if 0   // TODO: 如何使用API探测得到"-f lavfi -i testsrc"格式
+// 探测视频格式
+static int probe_format(const char *url, input_vfmt_t *vfmt)
 {
     int ret;
 
-
+    AVFormatContext *fmt_ctx = NULL;
     AVInputFormat *ifmt = av_find_input_format("lavfi");
-    ret = avformat_open_input(&(ictx->fmt_ctx), url, ifmt, NULL);
+    if (ifmt == NULL)
+    {
+        av_log(NULL, AV_LOG_ERROR, "Cannot find input format lavfi\n");
+        goto exit0;
+    }
+    av_log(NULL, AV_LOG_INFO, "input format: %s, %s, %s\n", ifmt->name, ifmt->long_name, ifmt->extensions);
+    ret = avformat_open_input(&fmt_ctx, NULL, ifmt, NULL);
     if (ret < 0)
     {
         av_log(NULL, AV_LOG_ERROR, "Cannot open input file\n");
         goto exit0;
     }
 
-    AVFormatContext *fmt_ctx;
     ret = avformat_find_stream_info(fmt_ctx, NULL);
     if (ret < 0)
     {
@@ -65,15 +59,13 @@ static int probe_testsrc_format(const char *url, input_avopt_t *avopt)
     }
 
     /* select the video stream */
-    AVCodec *dec;
+    AVCodec *dec = NULL;
     int v_idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, &dec, 0);
     if (v_idx < 0)
     {
         av_log(NULL, AV_LOG_ERROR, "Cannot find a video stream in the input file\n");
         goto exit1;
     }
-    ictx->frame_rate = fmt_ctx->streams[v_idx]->avg_frame_rate.num /
-                       fmt_ctx->streams[v_idx]->avg_frame_rate.den;
 
     /* create decoding context */
     AVCodecContext  *dec_ctx = avcodec_alloc_context3(dec);
@@ -82,7 +74,7 @@ static int probe_testsrc_format(const char *url, input_avopt_t *avopt)
         ret = AVERROR(ENOMEM);
         goto exit1;
     }
-    avcodec_parameters_to_context(dec_ctx, fmt_ctx->streams[ictx->video_idx]->codecpar);
+    avcodec_parameters_to_context(dec_ctx, fmt_ctx->streams[v_idx]->codecpar);
 
     /* init the video decoder */
     ret = avcodec_open2(dec_ctx, dec, NULL);
@@ -92,14 +84,20 @@ static int probe_testsrc_format(const char *url, input_avopt_t *avopt)
         goto exit2;
     }
 
-    avopt->width = dec_ctx->width;
-    avopt->height = dec_ctx->height;
-    avopt->pix_fmt = dec_ctx->pix_fmt;
-    avopt->sar = dec_ctx->sample_aspect_ratio;
-    avopt->time_base = fmt_ctx->streams[v_idx]->time_base;
-    avopt->frame_rate
+    vfmt->width = dec_ctx->width;
+    vfmt->height = dec_ctx->height;
+    vfmt->pix_fmt = dec_ctx->pix_fmt;
+    vfmt->sar = dec_ctx->sample_aspect_ratio;
+    vfmt->time_base = fmt_ctx->streams[v_idx]->time_base;
+    vfmt->frame_rate = fmt_ctx->streams[v_idx]->avg_frame_rate;
+    av_log(NULL, AV_LOG_INFO, "probe video format: "
+           "%dx%d, pix_fmt %d, SAR %d/%d, tb {%d, %d}, rate {%d, %d}\n",
+           vfmt->width, vfmt->height, vfmt->pix_fmt,
+           vfmt->sar.num, vfmt->sar.den,
+           vfmt->time_base.num, vfmt->time_base.den,
+           vfmt->frame_rate.num, vfmt->frame_rate.den);
 
-    return 0;
+    ret = 0;
     
 exit2:
     avcodec_free_context(&dec_ctx);
@@ -108,27 +106,24 @@ exit1:
 exit0:
     return ret;
 }
+#endif
 
-
-static int open_testsrc(filter_ctx_t *fctx)
+// @filter [i]  产生测试图案的filter
+// @vfmt   [o]  @filter的参数
+// @fctx   [o]  用户定义的数据类型，输出供调用者使用
+static int open_testsrc(const char *filter, input_vfmt_t *vfmt, filter_ctx_t *fctx)
 {
-    char args[512];
     int ret = 0;
-    // "testsrc"滤镜：
-    const AVFilter *bufsrc  = avfilter_get_by_name("testsrc");
-    // "buffersink"滤镜：缓冲视频帧，作为滤镜图的输出
-    const AVFilter *bufsink = avfilter_get_by_name("buffersink");
-    AVFilterInOut *outputs = avfilter_inout_alloc();
-    AVFilterInOut *inputs  = avfilter_inout_alloc();
 
     // 分配一个滤镜图filter_graph
     fctx->filter_graph = avfilter_graph_alloc();
     if (!fctx->filter_graph)
     {
-        ret = AVERROR(ENOMEM);
-        goto end;
+        return AVERROR(ENOMEM);
     }
 
+    // source滤镜：合法值有"testsrc"/"smptebars"/"color=c=blue"/...
+    const AVFilter *bufsrc  = avfilter_get_by_name(filter);
     // 为buffersrc滤镜创建滤镜实例buffersrc_ctx，命名为"in"
     // 将新创建的滤镜实例buffersrc_ctx添加到滤镜图filter_graph中
     ret = avfilter_graph_create_filter(&fctx->bufsrc_ctx, bufsrc, "in",
@@ -139,6 +134,8 @@ static int open_testsrc(filter_ctx_t *fctx)
         goto end;
     }
 
+    // "buffersink"滤镜：缓冲视频帧，作为滤镜图的输出
+    const AVFilter *bufsink = avfilter_get_by_name("buffersink");
     /* buffer video sink: to terminate the filter chain. */
     // 为buffersink滤镜创建滤镜实例buffersink_ctx，命名为"out"
     // 将新创建的滤镜实例buffersink_ctx添加到滤镜图filter_graph中
@@ -149,17 +146,6 @@ static int open_testsrc(filter_ctx_t *fctx)
         av_log(NULL, AV_LOG_ERROR, "Cannot create filter buffersink\n");
         goto end;
     }
-
-#if 0   // 因为后面显示视频帧时有sws_scale()进行图像格式转换，帮此处不设置滤镜输出格式也可
-    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUYV422, AV_PIX_FMT_NONE };
-    // 设置输出像素格式为pix_fmts[]中指定的格式(如果要用SDL显示，则这些格式应是SDL支持格式)
-    ret = av_opt_set_int_list(buffersink_ctx, "pix_fmts", pix_fmts,
-                              AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
-    if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Cannot set output pixel format\n");
-        goto end;
-    }
-#endif
 
     if ((ret = avfilter_link(fctx->bufsrc_ctx, 0, fctx->bufsink_ctx, 0)) < 0)
     {
@@ -174,10 +160,24 @@ static int open_testsrc(filter_ctx_t *fctx)
         goto end;
     }
 
-end:
-    avfilter_inout_free(&inputs);
-    avfilter_inout_free(&outputs);
+    vfmt->pix_fmt = av_buffersink_get_format(fctx->bufsink_ctx);
+    vfmt->width = av_buffersink_get_w(fctx->bufsink_ctx);
+    vfmt->height = av_buffersink_get_h(fctx->bufsink_ctx);
+    vfmt->sar = av_buffersink_get_sample_aspect_ratio(fctx->bufsink_ctx);
+    vfmt->time_base = av_buffersink_get_time_base(fctx->bufsink_ctx);
+    vfmt->frame_rate = av_buffersink_get_frame_rate(fctx->bufsink_ctx);
 
+    av_log(NULL, AV_LOG_INFO, "probe video format: "
+           "%dx%d, pix_fmt %d, SAR %d/%d, tb {%d, %d}, rate {%d, %d}\n",
+           vfmt->width, vfmt->height, vfmt->pix_fmt,
+           vfmt->sar.num, vfmt->sar.den,
+           vfmt->time_base.num, vfmt->time_base.den,
+           vfmt->frame_rate.num, vfmt->frame_rate.den);
+
+    return 0;
+
+end:
+    avfilter_graph_free(&fctx->filter_graph);
     return ret;
 }
 
@@ -188,173 +188,10 @@ static int close_testsrc(filter_ctx_t *fctx)
     return 0;
 }
 
-static int init_filters(const char *filters_descr, filter_ctx_t *fctx)
-{
-    int ret = 0;
-
-    // 分配一个滤镜图filter_graph
-    fctx->filter_graph = avfilter_graph_alloc();
-    if (!fctx->filter_graph)
-    {
-        ret = AVERROR(ENOMEM);
-        goto end;
-    }
-
-    char args[512];
-    int w = 320;
-    int h = 240;
-    AVRational time_base = {1, 25};
-    /* buffer video source: the decoded frames from the decoder will be inserted here. */
-    // args是buffersrc滤镜的参数
-    snprintf(args, sizeof(args),
-             "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
-             w, h, AV_PIX_FMT_RGB24, time_base.num, time_base.den, 1, 1);
-
-    // "buffer"滤镜：缓冲视频帧，作为滤镜图的输入
-    const AVFilter *bufsrc  = avfilter_get_by_name("buffer");
-    // 为buffersrc滤镜创建滤镜实例buffersrc_ctx，命名为"in"
-    // 将新创建的滤镜实例buffersrc_ctx添加到滤镜图filter_graph中
-    ret = avfilter_graph_create_filter(&fctx->bufsrc_ctx, bufsrc, "in",
-                                       args, NULL, fctx->filter_graph);
-    if (ret < 0)
-    {
-        av_log(NULL, AV_LOG_ERROR, "Cannot create buffer source\n");
-        goto end;
-    }
-
-    // "buffersink"滤镜：缓冲视频帧，作为滤镜图的输出
-    const AVFilter *bufsink = avfilter_get_by_name("buffersink");
-    /* buffer video sink: to terminate the filter chain. */
-    // 为buffersink滤镜创建滤镜实例buffersink_ctx，命名为"out"
-    // 将新创建的滤镜实例buffersink_ctx添加到滤镜图filter_graph中
-    ret = avfilter_graph_create_filter(&fctx->bufsink_ctx, bufsink, "out",
-                                       NULL, NULL, fctx->filter_graph);
-    if (ret < 0)
-    {
-        av_log(NULL, AV_LOG_ERROR, "Cannot create buffer sink\n");
-        goto end;
-    }
-
-#if 0   // 因为后面显示视频帧时有sws_scale()进行图像格式转换，帮此处不设置滤镜输出格式也可
-    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUYV422, AV_PIX_FMT_NONE };
-    // 设置输出像素格式为pix_fmts[]中指定的格式(如果要用SDL显示，则这些格式应是SDL支持格式)
-    ret = av_opt_set_int_list(buffersink_ctx, "pix_fmts", pix_fmts,
-                              AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
-    if (ret < 0) {
-        av_log(NULL, AV_LOG_ERROR, "Cannot set output pixel format\n");
-        goto end;
-    }
-#endif
-
-    /*
-     * Set the endpoints for the filter graph. The filter_graph will
-     * be linked to the graph described by filters_descr.
-     */
-    // 设置滤镜图的端点，包含此端点的滤镜图将会被连接到filters_descr
-    // 描述的滤镜图中
-
-    AVFilterInOut *outputs = avfilter_inout_alloc();
-
-    /*
-     * The buffer source output must be connected to the input pad of
-     * the first filter described by filters_descr; since the first
-     * filter input label is not specified, it is set to "in" by
-     * default.
-     */
-    // outputs变量意指buffersrc_ctx滤镜的输出引脚(output pad)
-    // src缓冲区(buffersrc_ctx滤镜)的输出必须连到filters_descr中第一个
-    // 滤镜的输入；filters_descr中第一个滤镜的输入标号未指定，故默认为
-    // "in"，此处将buffersrc_ctx的输出标号也设为"in"，就实现了同标号相连
-    outputs->name       = av_strdup("in");
-    outputs->filter_ctx = fctx->bufsrc_ctx;
-    outputs->pad_idx    = 0;
-    outputs->next       = NULL;
-
-    AVFilterInOut *inputs  = avfilter_inout_alloc();
-
-    /*
-     * The buffer sink input must be connected to the output pad of
-     * the last filter described by filters_descr; since the last
-     * filter output label is not specified, it is set to "out" by
-     * default.
-     */
-    // inputs变量意指buffersink_ctx滤镜的输入引脚(input pad)
-    // sink缓冲区(buffersink_ctx滤镜)的输入必须连到filters_descr中最后
-    // 一个滤镜的输出；filters_descr中最后一个滤镜的输出标号未指定，故
-    // 默认为"out"，此处将buffersink_ctx的输出标号也设为"out"，就实现了
-    // 同标号相连
-    inputs->name       = av_strdup("out");
-    inputs->filter_ctx = fctx->bufsink_ctx;
-    inputs->pad_idx    = 0;
-    inputs->next       = NULL;
-
-    // 将filters_descr描述的滤镜图添加到filter_graph滤镜图中
-    // 调用前：filter_graph包含两个滤镜buffersrc_ctx和buffersink_ctx
-    // 调用后：filters_descr描述的滤镜图插入到filter_graph中，buffersrc_ctx连接到filters_descr
-    //         的输入，filters_descr的输出连接到buffersink_ctx，filters_descr只进行了解析而不
-    //         建立内部滤镜间的连接。filters_desc与filter_graph间的连接是利用AVFilterInOut inputs
-    //         和AVFilterInOut outputs连接起来的，AVFilterInOut是一个链表，最终可用的连在一起的
-    //         滤镜链/滤镜图就是通过这个链表串在一起的。
-    ret = avfilter_graph_parse_ptr(fctx->filter_graph, filters_descr,
-                                   &inputs, &outputs, NULL);
-    if (ret < 0)
-    {
-        goto end;
-    }
-
-    // 验证有效性并配置filtergraph中所有连接和格式
-    ret = avfilter_graph_config(fctx->filter_graph, NULL);
-    if (ret < 0)
-    {
-        goto end;
-    }
-
-end:
-    avfilter_inout_free(&inputs);
-    avfilter_inout_free(&outputs);
-
-    return ret;
-}
-
-static int deinit_filters(filter_ctx_t *fctx)
-{
-    avfilter_graph_free(&fctx->filter_graph);
-
-    return 0;
-}
-
 static int read_testsrc_frame(const filter_ctx_t *fctx, AVFrame *frame_out)
 {
     int ret;
-    
-    // 从filtergraph获取经过处理的frame
-    ret = av_buffersink_get_frame(fctx->bufsink_ctx, frame_out);
-    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-    {
-        av_log(NULL, AV_LOG_WARNING, "Need more frames\n");
-        return 0;
-    }
-    else if (ret < 0)
-    {
-        return ret;
-    }
 
-    return 1;
-}
-
-
-static int filtering_video_frame(const filter_ctx_t *fctx, AVFrame *frame_in, AVFrame *frame_out)
-{
-    int ret;
-    
-    // 将frame送入filtergraph
-    ret = av_buffersrc_add_frame_flags(fctx->bufsrc_ctx, frame_in, AV_BUFFERSRC_FLAG_KEEP_REF);
-    if (ret < 0)
-    {
-        av_log(NULL, AV_LOG_ERROR, "Error while feeding the filtergraph\n");
-        return ret;
-    }
-    
     // 从filtergraph获取经过处理的frame
     ret = av_buffersink_get_frame(fctx->bufsink_ctx, frame_out);
     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
@@ -390,15 +227,25 @@ int main(int argc, char *argv[])
         goto exit0;
     }
 
+    input_vfmt_t input_vfmt;
     filter_ctx_t input_ctx = { NULL, NULL, NULL };
-    ret = open_testsrc(&input_ctx);
+    ret = open_testsrc(argv[1], &input_vfmt, &input_ctx);
     if (ret < 0)
     {
         goto exit0;
     }
 
+#if 0
+    input_vfmt_t input_vfmt;
+    ret = probe_format(argv[1], &input_vfmt);
+    if (ret < 0)
+    {
+        goto exit0;
+    }
+#endif
+
     filter_ctx_t filter_ctx = { NULL, NULL, NULL };
-    ret = init_filters(argv[3], &filter_ctx);
+    ret = init_filters(argv[3], &input_vfmt, &filter_ctx);
     if (ret < 0)
     {
         goto exit1;
@@ -420,6 +267,16 @@ int main(int argc, char *argv[])
         perror("Could not allocate frame");
         goto exit3;
     }
+
+    int temp_num = input_vfmt.frame_rate.num;
+    int temp_den = input_vfmt.frame_rate.den;
+    int interval = (temp_num > 0) ? (temp_den*1000)/temp_num : 40;
+
+    printf("frame rate %d/%d FPS, refresh interval %d ms\n", temp_num/temp_den, interval);
+
+    // 创建视频解码定时刷新线程，此线程为SDL内部线程，调用指定的回调函数
+    SDL_AddTimer(interval, sdl_time_cb_refresh, NULL);
+    SDL_Event sdl_event;
 
     while (1)
     {
@@ -447,6 +304,8 @@ int main(int argc, char *argv[])
         
         av_frame_unref(filt_frame);
         av_frame_unref(frame);
+
+        SDL_WaitEvent(&sdl_event);
     }
 
 exit4:
