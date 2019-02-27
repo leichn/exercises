@@ -56,11 +56,14 @@ static int open_input_file(const char *filename)
     unsigned int i;
 
     ifmt_ctx = NULL;
+    // 1. 打开视频文件：读取文件头，将文件格式信息存储在ifmt_ctx中
     if ((ret = avformat_open_input(&ifmt_ctx, filename, NULL, NULL)) < 0) {
         av_log(NULL, AV_LOG_ERROR, "Cannot open input file\n");
         return ret;
     }
 
+    // 2. 搜索流信息：读取一段视频文件数据，尝试解码，将取到的流信息填入ifmt_ctx.streams
+    //    ifmt_ctx.streams是一个指针数组，数组大小是ifmt_ctx.nb_streams
     if ((ret = avformat_find_stream_info(ifmt_ctx, NULL)) < 0) {
         av_log(NULL, AV_LOG_ERROR, "Cannot find stream information\n");
         return ret;
@@ -70,6 +73,7 @@ static int open_input_file(const char *filename)
     if (!stream_ctx)
         return AVERROR(ENOMEM);
 
+    // 3. 将输入文件中各流对应的AVCodecContext存入数组
     for (i = 0; i < ifmt_ctx->nb_streams; i++) {
         AVStream *stream = ifmt_ctx->streams[i];
         AVCodec *dec = avcodec_find_decoder(stream->codecpar->codec_id);
@@ -90,6 +94,7 @@ static int open_input_file(const char *filename)
             return ret;
         }
         /* Reencode video & audio and remux subtitles etc. */
+        // 音频流视频流需要重新编码，字幕流只需要重新封装
         if (codec_ctx->codec_type == AVMEDIA_TYPE_VIDEO
                 || codec_ctx->codec_type == AVMEDIA_TYPE_AUDIO) {
             if (codec_ctx->codec_type == AVMEDIA_TYPE_VIDEO)

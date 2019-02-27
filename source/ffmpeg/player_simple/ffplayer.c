@@ -28,6 +28,7 @@ int main(int argc, char *argv[])
     AVFormatContext*    p_fmt_ctx = NULL;
     AVCodecContext*     p_codec_ctx = NULL;
     AVCodecParameters*  p_codec_par = NULL;
+    AVStream*           p_stream = NULL;
     AVCodec*            p_codec = NULL;
     AVFrame*            p_frm_raw = NULL;        // 帧，由包解码得到原始帧
     AVFrame*            p_frm_yuv = NULL;        // 帧，由原始帧色彩转换得到
@@ -52,7 +53,7 @@ int main(int argc, char *argv[])
     // 初始化libavformat(所有格式)，注册所有复用器/解复用器
     // av_register_all();   // 已被申明为过时的，直接不再使用即可
 
-    // A1. 打开视频文件：读取文件头，将文件格式信息存储在"fmt context"中
+    // A1. 打开视频文件：读取文件头，将文件格式信息存储在p_fmt_ctx中
     ret = avformat_open_input(&p_fmt_ctx, argv[1], NULL, NULL);
     if (ret != 0)
     {
@@ -60,8 +61,8 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // A2. 搜索流信息：读取一段视频文件数据，尝试解码，将取到的流信息填入pFormatCtx->streams
-    //     p_fmt_ctx->streams是一个指针数组，数组大小是pFormatCtx->nb_streams
+    // A2. 搜索流信息：读取一段视频文件数据，尝试解码，将取到的流信息填入p_fmt_ctx->streams
+    //     p_fmt_ctx->streams是一个指针数组，数组大小是p_fmt_ctx->nb_streams
     ret = avformat_find_stream_info(p_fmt_ctx, NULL);
     if (ret < 0)
     {
@@ -91,28 +92,26 @@ int main(int argc, char *argv[])
 
     // A5. 为视频流构建解码器AVCodecContext
 
-    // A5.1 获取解码器参数AVCodecParameters
-    p_codec_par = p_fmt_ctx->streams[v_idx]->codecpar;
-    // A5.2 获取解码器
-    p_codec = avcodec_find_decoder(p_codec_par->codec_id);
+    // A5.1 获取解码器AVCodec
+    p_stream = p_fmt_ctx->streams[v_idx];
+    p_codec = avcodec_find_decoder(p_stream->codecpar->codec_id);
     if (p_codec == NULL)
     {
         printf("Cann't find codec!\n");
         return -1;
     }
-    // A5.3 构建解码器AVCodecContext
-    // A5.3.1 p_codec_ctx初始化：分配结构体，使用p_codec初始化相应成员为默认值
+    // A5.2 p_codec_ctx初始化：分配结构体，使用p_codec初始化p_codec_ctx相应成员为默认值
     p_codec_ctx = avcodec_alloc_context3(p_codec);
 
-    // A5.3.2 p_codec_ctx初始化：p_codec_par ==> p_codec_ctx，初始化相应成员
-    ret = avcodec_parameters_to_context(p_codec_ctx, p_codec_par);
+    // A5.3 p_codec_ctx初始化：使用p_stream->codecpar初始化p_codec_ctx相应成员
+    ret = avcodec_parameters_to_context(p_codec_ctx, p_stream->codecpar);
     if (ret < 0)
     {
         printf("avcodec_parameters_to_context() failed %d\n", ret);
         return -1;
     }
 
-    // A5.3.3 p_codec_ctx初始化：使用p_codec初始化p_codec_ctx，初始化完成
+    // A5.4 p_codec_ctx初始化：使用p_codec初始化p_codec_ctx，初始化完成
     ret = avcodec_open2(p_codec_ctx, p_codec, NULL);
     if (ret < 0)
     {
