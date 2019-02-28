@@ -56,36 +56,35 @@ typedef struct {
     int              frame_rate;
 }   inout_ctx_t;
 
-static void get_filter_vfmt(const inout_ctx_t *ictx, int stream_idx, filter_vfmt_t *vfmt)
+static void get_filter_ivfmt(const inout_ctx_t *ictx, int stream_idx, filter_ivfmt_t *ivfmt)
 {
-    vfmt->width = ictx->codec_ctx[stream_idx]->width;
-    vfmt->height = ictx->codec_ctx[stream_idx]->height;
-    vfmt->pix_fmt = ictx->codec_ctx[stream_idx]->pix_fmt;
-    vfmt->sar = ictx->codec_ctx[stream_idx]->sample_aspect_ratio;
-    vfmt->time_base = ictx->fmt_ctx->streams[stream_idx]->time_base;
-    vfmt->frame_rate = ictx->fmt_ctx->streams[stream_idx]->avg_frame_rate;
+    ivfmt->width = ictx->codec_ctx[stream_idx]->width;
+    ivfmt->height = ictx->codec_ctx[stream_idx]->height;
+    ivfmt->pix_fmt = ictx->codec_ctx[stream_idx]->pix_fmt;
+    ivfmt->sar = ictx->codec_ctx[stream_idx]->sample_aspect_ratio;
+    ivfmt->time_base = ictx->fmt_ctx->streams[stream_idx]->time_base;
+    ivfmt->frame_rate = ictx->fmt_ctx->streams[stream_idx]->avg_frame_rate;
     av_log(NULL, AV_LOG_INFO, "get video format: "
-           "%dx%d, pix_fmt %d, SAR %d/%d, tb {%d, %d}, rate {%d, %d}\n",
-           vfmt->width, vfmt->height, vfmt->pix_fmt,
-           vfmt->sar.num, vfmt->sar.den,
-           vfmt->time_base.num, vfmt->time_base.den,
-           vfmt->frame_rate.num, vfmt->frame_rate.den);
+            "%dx%d, pix_fmt %d, SAR %d/%d, tb {%d, %d}, rate {%d, %d}\n",
+            ivfmt->width, ivfmt->height, ivfmt->pix_fmt,
+            ivfmt->sar.num, ivfmt->sar.den,
+            ivfmt->time_base.num, ivfmt->time_base.den,
+            ivfmt->frame_rate.num, ivfmt->frame_rate.den);
 }
 
-static void get_filter_afmt(const inout_ctx_t *ictx, int stream_idx, filter_afmt_t *afmt)
+static void get_filter_ovfmt(const inout_ctx_t *octx, int stream_idx, filter_ovfmt_t *ovfmt)
 {
-    vfmt->width = ictx->codec_ctx[stream_idx]->width;
-    vfmt->height = ictx->codec_ctx[stream_idx]->height;
-    vfmt->pix_fmt = ictx->codec_ctx[stream_idx]->pix_fmt;
-    vfmt->sar = ictx->codec_ctx[stream_idx]->sample_aspect_ratio;
-    vfmt->time_base = ictx->fmt_ctx->streams[stream_idx]->time_base;
-    vfmt->frame_rate = ictx->fmt_ctx->streams[stream_idx]->avg_frame_rate;
-    av_log(NULL, AV_LOG_INFO, "get video format: "
-           "%dx%d, pix_fmt %d, SAR %d/%d, tb {%d, %d}, rate {%d, %d}\n",
-           vfmt->width, vfmt->height, vfmt->pix_fmt,
-           vfmt->sar.num, vfmt->sar.den,
-           vfmt->time_base.num, vfmt->time_base.den,
-           vfmt->frame_rate.num, vfmt->frame_rate.den);
+
+}
+
+static void get_filter_iafmt(const inout_ctx_t *ictx, int stream_idx, filter_iafmt_t *iafmt)
+{
+
+}
+
+static void get_filter_oafmt(const inout_ctx_t *octx, int stream_idx, filter_oafmt_t *oafmt)
+{
+
 }
 
 
@@ -142,7 +141,7 @@ static int open_input_file(const char *filename, inout_ctx_t *ictx)
         if (ret < 0)
         {
             av_log(NULL, AV_LOG_ERROR, "Failed to copy decoder parameters to input decoder context "
-                   "for stream #%u\n", i);
+                    "for stream #%u\n", i);
             return ret;
         }
         /* Reencode video & audio and remux subtitles etc. */
@@ -166,7 +165,7 @@ static int open_input_file(const char *filename, inout_ctx_t *ictx)
 
     ictx->fmt_ctx = ifmt_ctx;
     ictx->codec_ctx = pp_dec_ctx;
-    
+
     return 0;
 }
 
@@ -186,7 +185,7 @@ static int open_output_file(const char *filename, const inout_ctx_t *ictx, inout
         av_log(NULL, AV_LOG_ERROR, "Could not create output context\n");
         return AVERROR_UNKNOWN;
     }
-    
+
     // 每路音频流/视频流一个AVCodecContext
     AVCodecContext *pp_enc_ctx[] = av_mallocz_array(ifmt_ctx->nb_streams, sizeof(AVCodecContext *));
     if (!pp_enc_ctx)
@@ -211,7 +210,7 @@ static int open_output_file(const char *filename, const inout_ctx_t *ictx, inout
 
         // 3. 构建AVCodecContext
         if (dec_ctx->codec_type == AVMEDIA_TYPE_VIDEO ||
-            dec_ctx->codec_type == AVMEDIA_TYPE_AUDIO)          // 音频流或视频流
+                dec_ctx->codec_type == AVMEDIA_TYPE_AUDIO)          // 音频流或视频流
         {
             // 3.1 查找编码器AVCodec，本例使用与解码器相同的编码器
             AVCodec *encoder = avcodec_find_encoder(dec_ctx->codec_id);
@@ -332,161 +331,6 @@ static int open_output_file(const char *filename, const inout_ctx_t *ictx, inout
     return 0;
 }
 
-static int init_filter(filter_ctx_t* fctx, AVCodecContext *dec_ctx,
-        AVCodecContext *enc_ctx, const char *filter_spec)
-{
-    char args[512];
-    int ret = 0;
-    const AVFilter *buffersrc = NULL;
-    const AVFilter *buffersink = NULL;
-    AVFilterContext *buffersrc_ctx = NULL;
-    AVFilterContext *buffersink_ctx = NULL;
-    AVFilterInOut *outputs = avfilter_inout_alloc();
-    AVFilterInOut *inputs  = avfilter_inout_alloc();
-    AVFilterGraph *filter_graph = avfilter_graph_alloc();
-
-    if (!outputs || !inputs || !filter_graph) {
-        ret = AVERROR(ENOMEM);
-        goto end;
-    }
-
-    if (dec_ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-        buffersrc = avfilter_get_by_name("buffer");
-        buffersink = avfilter_get_by_name("buffersink");
-        if (!buffersrc || !buffersink) {
-            av_log(NULL, AV_LOG_ERROR, "filtering source or sink element not found\n");
-            ret = AVERROR_UNKNOWN;
-            goto end;
-        }
-
-        snprintf(args, sizeof(args),
-                "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
-                dec_ctx->width, dec_ctx->height, dec_ctx->pix_fmt,
-                dec_ctx->time_base.num, dec_ctx->time_base.den,
-                dec_ctx->sample_aspect_ratio.num,
-                dec_ctx->sample_aspect_ratio.den);
-
-        // 将新创建的滤镜实例buffersrc_ctx添加到滤镜图filter_graph中
-        ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in",
-                args, NULL, filter_graph);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Cannot create buffer source\n");
-            goto end;
-        }
-
-        // 将新创建的滤镜实例buffersink_ctx添加到滤镜图filter_graph中
-        ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out",
-                NULL, NULL, filter_graph);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Cannot create buffer sink\n");
-            goto end;
-        }
-
-        // 将输出  像素格式设置为编码器采用的像素格式
-        ret = av_opt_set_bin(buffersink_ctx, "pix_fmts",
-                (uint8_t*)&enc_ctx->pix_fmt, sizeof(enc_ctx->pix_fmt),
-                AV_OPT_SEARCH_CHILDREN);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Cannot set output pixel format\n");
-            goto end;
-        }
-    } else if (dec_ctx->codec_type == AVMEDIA_TYPE_AUDIO) {
-        buffersrc = avfilter_get_by_name("abuffer");
-        buffersink = avfilter_get_by_name("abuffersink");
-        if (!buffersrc || !buffersink) {
-            av_log(NULL, AV_LOG_ERROR, "filtering source or sink element not found\n");
-            ret = AVERROR_UNKNOWN;
-            goto end;
-        }
-
-        if (!dec_ctx->channel_layout)
-            dec_ctx->channel_layout =
-                av_get_default_channel_layout(dec_ctx->channels);
-        snprintf(args, sizeof(args),
-                "time_base=%d/%d:sample_rate=%d:sample_fmt=%s:channel_layout=0x%"PRIx64,
-                dec_ctx->time_base.num, dec_ctx->time_base.den, dec_ctx->sample_rate,
-                av_get_sample_fmt_name(dec_ctx->sample_fmt),
-                dec_ctx->channel_layout);
-        ret = avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in",
-                args, NULL, filter_graph);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Cannot create audio buffer source\n");
-            goto end;
-        }
-
-        ret = avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out",
-                NULL, NULL, filter_graph);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Cannot create audio buffer sink\n");
-            goto end;
-        }
-
-        ret = av_opt_set_bin(buffersink_ctx, "sample_fmts",
-                (uint8_t*)&enc_ctx->sample_fmt, sizeof(enc_ctx->sample_fmt),
-                AV_OPT_SEARCH_CHILDREN);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Cannot set output sample format\n");
-            goto end;
-        }
-
-        // 将输出声道布局设置为编码器采用的声道布局
-        ret = av_opt_set_bin(buffersink_ctx, "channel_layouts",
-                (uint8_t*)&enc_ctx->channel_layout,
-                sizeof(enc_ctx->channel_layout), AV_OPT_SEARCH_CHILDREN);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Cannot set output channel layout\n");
-            goto end;
-        }
-
-        ret = av_opt_set_bin(buffersink_ctx, "sample_rates",
-                (uint8_t*)&enc_ctx->sample_rate, sizeof(enc_ctx->sample_rate),
-                AV_OPT_SEARCH_CHILDREN);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Cannot set output sample rate\n");
-            goto end;
-        }
-    } else {
-        ret = AVERROR_UNKNOWN;
-        goto end;
-    }
-
-    /* Endpoints for the filter graph. */
-    outputs->name       = av_strdup("in");
-    outputs->filter_ctx = buffersrc_ctx;
-    outputs->pad_idx    = 0;
-    outputs->next       = NULL;
-
-    inputs->name       = av_strdup("out");
-    inputs->filter_ctx = buffersink_ctx;
-    inputs->pad_idx    = 0;
-    inputs->next       = NULL;
-
-    if (!outputs->name || !inputs->name) {
-        ret = AVERROR(ENOMEM);
-        goto end;
-    }
-
-    // 将filter_spec描述的滤镜图添加到filter_graph滤镜图中
-    if ((ret = avfilter_graph_parse_ptr(filter_graph, filter_spec,
-                    &inputs, &outputs, NULL)) < 0)
-        goto end;
-
-    // 配置滤镜，建立滤镜间的连接
-    if ((ret = avfilter_graph_config(filter_graph, NULL)) < 0)
-        goto end;
-
-    /* Fill filter_ctx_t */
-    fctx->buffersrc_ctx = buffersrc_ctx;
-    fctx->buffersink_ctx = buffersink_ctx;
-    fctx->filter_graph = filter_graph;
-
-end:
-    avfilter_inout_free(&inputs);
-    avfilter_inout_free(&outputs);
-
-    return ret;
-}
-
 // 为每个音频流/视频流使用空滤镜，滤镜图中将buffer滤镜和buffersink滤镜直接相连
 // 目的是：通过视频buffersink滤镜将视频流输出像素格式转换为编码器采用的像素格式
 //         通过音频abuffersink滤镜将音频流输出声道布局转换为编码器采用的声道布局
@@ -516,7 +360,7 @@ static int init_filters(const inout_ctx_t *ictx, const *inout_ctx_t *octx, filte
         else if (codec_type == AVMEDIA_TYPE_AUDIO)
         {
             get_filter_afmt(ictx, i, &afmt)
-            ret = init_audio_filters("anull", afmt, fctxs[i]);
+                ret = init_audio_filters("anull", afmt, fctxs[i]);
         }
 
         if (ret < 0)
@@ -558,8 +402,8 @@ static int encode_write_frame(AVFrame *filt_frame, unsigned int stream_index, in
     /* prepare packet for muxing */
     enc_pkt.stream_index = stream_index;
     av_packet_rescale_ts(&enc_pkt,
-                         stream_ctx[stream_index].enc_ctx->time_base,
-                         ofmt_ctx->streams[stream_index]->time_base);
+            stream_ctx[stream_index].enc_ctx->time_base,
+            ofmt_ctx->streams[stream_index]->time_base);
 
     av_log(NULL, AV_LOG_DEBUG, "Muxing frame\n");
     /* mux encoded frame */
@@ -636,6 +480,33 @@ static int flush_encoder(unsigned int stream_index)
     return ret;
 }
 
+// return -1: error, 0: need more packet, 1: success
+static int decode_video_frame(AVCodecContext *dec_ctx, AVPacket *packet, AVFrame *frame)
+{
+    int ret = avcodec_send_packet(dec_ctx, packet);
+    if (ret < 0)
+    {
+        av_log(NULL, AV_LOG_ERROR, "Error while sending a packet to the decoder\n");
+        return ret;
+    }
+
+    ret = avcodec_receive_frame(dec_ctx, frame);
+    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+    {
+        return 0;
+    }
+    else if (ret < 0)
+    {
+        av_log(NULL, AV_LOG_ERROR, "Error while receiving a frame from the decoder\n");
+        return ret;
+    }
+
+    frame->pts = frame->best_effort_timestamp;
+
+    return 1;
+}
+
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -645,7 +516,6 @@ int main(int argc, char **argv)
     unsigned int stream_index;
     unsigned int i;
     int got_frame;
-    int (*dec_func)(AVCodecContext *, AVFrame *, int *, const AVPacket *);
 
     if (argc != 3) {
         av_log(NULL, AV_LOG_ERROR, "Usage: %s <input file> <output file>\n", argv[0]);
@@ -672,10 +542,22 @@ int main(int argc, char **argv)
     /* read all packets */
     while (1) {
         // 2. 从输入文件读取packet
-        if ((ret = av_read_frame(ifmt_ctx, &packet)) < 0)
+        ret = av_read_frame(ictx->fmt_ctx, &packet);
+        if (ret < 0)
         {
-            break;
+            if ((ret == AVERROR_EOF) || avio_feof(ictx->fmt_ctx->pb))
+            {
+                // 输入文件已读完，发送NULL packet以冲洗(flush)解码器，否则解码器中缓存的帧取不出来
+                
+            }
+            else
+            {
+                goto end;
+            }
         }
+
+
+        
         stream_index = packet.stream_index;
         type = ictx->fmt_ctx->streams[stream_index]->codecpar->codec_type;
         av_log(NULL, AV_LOG_DEBUG, "Demuxer gave frame of stream_index %u\n", stream_index);
@@ -691,8 +573,8 @@ int main(int argc, char **argv)
             // 3.1 将packet中的timestamps/durations等时域参数按封装器中的时基转换为解码器中的时基
             //     这一步是供解码使用的，这种用法已经过时，参AVCodecContext.time_base说明
             av_packet_rescale_ts(&packet,
-                                 ifmt_ctx->streams[stream_index]->time_base,
-                                 stream_ctx[stream_index].dec_ctx->time_base);
+                    ifmt_ctx->streams[stream_index]->time_base,
+                    stream_ctx[stream_index].dec_ctx->time_base);
             // 3.2 解码视频帧/音频帧，接口已经过时，应使用avcodec_send_packet()和avcodec_receive_frame()
             dec_func = (type == AVMEDIA_TYPE_VIDEO) ? avcodec_decode_video2 :
                 avcodec_decode_audio4;
@@ -719,8 +601,8 @@ int main(int argc, char **argv)
             // AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
             // 所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
             av_packet_rescale_ts(&packet,
-                                 ifmt_ctx->streams[stream_index]->time_base,
-                                 ofmt_ctx->streams[stream_index]->time_base);
+                    ifmt_ctx->streams[stream_index]->time_base,
+                    ofmt_ctx->streams[stream_index]->time_base);
 
             ret = av_interleaved_write_frame(ofmt_ctx, &packet);
             if (ret < 0)

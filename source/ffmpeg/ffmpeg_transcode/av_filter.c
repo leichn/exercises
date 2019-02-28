@@ -7,8 +7,8 @@
 //                    数组形式，以-1标识有效元素结束，形如{AV_PIX_FMT_YUV420P, AV_PIX_FMT_RGB24, -1}
 // @fctx:          O, 配置好的 filter context
 int init_video_filters(const char *filters_descr, 
-                       const filter_vfmt_t *vfmt, 
-                       const enum AVPixelFormat pix_fmts[], 
+                       const filter_ivfmt_t *ivfmt, 
+                       const filter_ovfmt_t *ovfmt,
                        filter_ctx_t *fctx)
 {
     int ret = 0;
@@ -23,15 +23,15 @@ int init_video_filters(const char *filters_descr,
 
     char args[512];
     char *p_args = NULL;
-    if (vfmt != NULL)
+    if (ivfmt != NULL)
     {
         /* buffer video source: the decoded frames from the decoder will be inserted here. */
         // args是buffersrc滤镜的参数
         snprintf(args, sizeof(args),
                  "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
-                 vfmt->width, vfmt->height, vfmt->pix_fmt, 
-                 vfmt->time_base.num, vfmt->time_base.den, 
-                 vfmt->sar.num, vfmt->sar.den);
+                 ivfmt->width, ivfmt->height, ivfmt->pix_fmt, 
+                 ivfmt->time_base.num, ivfmt->time_base.den, 
+                 ivfmt->sar.num, ivfmt->sar.den);
         p_args = args;
     }
 
@@ -60,10 +60,8 @@ int init_video_filters(const char *filters_descr,
         goto end;
     }
 
-
-    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUYV422, AV_PIX_FMT_NONE };
     // 设置输出像素格式为pix_fmts[]中指定的格式(如果要用SDL显示，则这些格式应是SDL支持格式)
-    ret = av_opt_set_int_list(buffersink_ctx, "pix_fmts", pix_fmts,
+    ret = av_opt_set_int_list(&fctx->bufsink_ctx, "pix_fmts", ovfmt->pix_fmts,
                               AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "Cannot set output pixel format\n");
@@ -145,8 +143,8 @@ end:
 //                    数组形式，以-1标识有效元素结束，形如{AV_PIX_FMT_YUV420P, AV_PIX_FMT_RGB24, -1}
 // @fctx:          O, 配置好的 filter context
 int init_audio_filters(const char *filters_descr, 
-                       const filter_afmt_t *afmt, 
-                       const , 
+                       const filter_iafmt_t *iafmt, 
+                       const filter_oafmt_t *oafmt, 
                        filter_ctx_t *fctx)
 {
     int ret = 0;
@@ -161,18 +159,18 @@ int init_audio_filters(const char *filters_descr,
 
     char args[512];
     char *p_args = NULL;
-    if (afmt != NULL)
+    if (iafmt != NULL)
     {
         // args是abuffersrc滤镜的参数
-        if (afmt->channel_layout == 0)
+        if (iafmt->channel_layout == 0)
         {
-            afmt->channel_layout = av_get_default_channel_layout(dec_ctx->channels);
+            iafmt->channel_layout = av_get_default_channel_layout(dec_ctx->channels);
         }
         snprintf(args, sizeof(args),
                 "time_base=%d/%d:sample_rate=%d:sample_fmt=%s:channel_layout=0x%"PRIx64,
-                afmt->time_base.num, afmt->time_base.den, afmt->sample_rate,
-                av_get_sample_fmt_name(afmt->sample_fmt),
-                afmt->channel_layout);
+                iafmt->time_base.num, iafmt->time_base.den, iafmt->sample_rate,
+                av_get_sample_fmt_name(iafmt->sample_fmt),
+                iafmt->channel_layout);
         p_args = args;
     }
 
@@ -202,9 +200,8 @@ int init_audio_filters(const char *filters_descr,
     }
 
 
-    ret = av_opt_set_bin(buffersink_ctx, "sample_fmts",
-            (uint8_t*)&enc_ctx->sample_fmt, sizeof(enc_ctx->sample_fmt),
-            AV_OPT_SEARCH_CHILDREN);
+    ret = av_opt_set_int_list(fctx->bufsink_ctx, "sample_fmts",
+            oafmt->sample_fmts, -1, AV_OPT_SEARCH_CHILDREN);
     if (ret < 0)
     {
         av_log(NULL, AV_LOG_ERROR, "Cannot set output sample format\n");
@@ -212,17 +209,16 @@ int init_audio_filters(const char *filters_descr,
     }
     
     // 将输出声道布局设置为编码器采用的声道布局
-    ret = av_opt_set_bin(buffersink_ctx, "channel_layouts",
-            (uint8_t*)&enc_ctx->channel_layout,
-            sizeof(enc_ctx->channel_layout), AV_OPT_SEARCH_CHILDREN);
+    ret = av_opt_set_int_list(fctx->bufsink_ctx, "channel_layouts",
+            oafmt->channel_layouts, -1, AV_OPT_SEARCH_CHILDREN);
     if (ret < 0)
     {
         av_log(NULL, AV_LOG_ERROR, "Cannot set output channel layout\n");
         goto end;
     }
     
-    ret = av_opt_set_bin(buffersink_ctx, "sample_rates",
-            (uint8_t*)&enc_ctx->sample_rate, sizeof(enc_ctx->sample_rate),
+    ret = av_opt_set_int_list(fctx->bufsink_ctx, "sample_rates",
+            oafmt->sample_rates, -1,
             AV_OPT_SEARCH_CHILDREN);
     if (ret < 0)
     {
