@@ -100,10 +100,10 @@ int main(int argc, char *argv[])
         printf("Cann't find codec!\n");
         return -1;
     }
-    // A5.2 p_codec_ctx初始化：分配结构体，使用p_codec初始化p_codec_ctx相应成员为默认值
+    // A5.2 AVCodecContext初始化：分配结构体，使用AVCodec初始化AVCodecContext相应成员为默认值
     p_codec_ctx = avcodec_alloc_context3(p_codec);
 
-    // A5.3 p_codec_ctx初始化：使用p_stream->codecpar初始化p_codec_ctx相应成员
+    // A5.3 AVCodecContext初始化：使用codec参数codecpar初始化AVCodecContext相应成员
     ret = avcodec_parameters_to_context(p_codec_ctx, p_stream->codecpar);
     if (ret < 0)
     {
@@ -111,7 +111,7 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // A5.4 p_codec_ctx初始化：使用p_codec初始化p_codec_ctx，初始化完成
+    // A5.4 AVCodecContext初始化：使用codec参数codecpar初始化AVCodecContext，初始化完成
     ret = avcodec_open2(p_codec_ctx, p_codec, NULL);
     if (ret < 0)
     {

@@ -130,7 +130,7 @@ int main(int argc, char **argv)
     }
     av_dump_format(ofmt_ctx, 0, out_filename, 1);
 
-    if (!(ofmt->flags & AVFMT_NOFILE)) {
+    if (!(ofmt->flags & AVFMT_NOFILE)) {    // TODO: 研究AVFMT_NOFILE标志
         // 2.4 创建并初始化一个AVIOContext，用以访问URL(out_filename)指定的资源
         ret = avio_open(&ofmt_ctx->pb, out_filename, AVIO_FLAG_WRITE);
         if (ret < 0) {

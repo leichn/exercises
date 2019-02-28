@@ -1,7 +1,7 @@
 #include "video_filter.h"
 
 // 创建配置一个滤镜图，在后续滤镜处理中，可以往此滤镜图输入数据并从滤镜图获得输出数据
-int init_filters(const char *filters_descr, const input_vfmt_t *vfmt, filter_ctx_t *fctx)
+int init_video_filters(const char *filters_descr, const input_vfmt_t *vfmt, filter_ctx_t *fctx)
 {
     int ret = 0;
 
