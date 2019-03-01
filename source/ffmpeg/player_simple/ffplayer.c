@@ -218,6 +218,7 @@ int main(int argc, char *argv[])
         {
             // A9. 视频解码：packet ==> frame
             // A9.1 向解码器喂数据，一个packet可能是一个视频帧或多个音频帧，此处音频帧已被上一句滤掉
+            //      发送第一个 flush packet 会返回成功，后续的 flush packet 会返回AVERROR_EOF
             ret = avcodec_send_packet(p_codec_ctx, p_packet);
             if (ret != 0)
             {

@@ -1,19 +1,22 @@
+#include <stdbool.h>
+#include "av_codec.h"
 
 //
-// retrun 1: got a frame success
-//        0: need mored packet
-//        AVERROR_EOF: 
-//        <0: error
+// retrun 1:                got a frame success
+//        AVERROR(EAGAIN):  need mored packet
+//        AVERROR_EOF:      end of file
+//        <0:               error
 int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, AVFrame *frame)
 {
     int ret = AVERROR(EAGAIN);
+    bool send = false;
 
     while (1)
     {
-        // 3. 从解码器接收frame
+        // 2. 从解码器接收frame
         if (dec_ctx->codec_type == AVMEDIA_TYPE_VIDEO)
         {
-            // 3.1 一个视频packet含一个视频frame
+            // 2.1 一个视频packet含一个视频frame
             //     解码器缓存一定数量的packet后，才有解码后的frame输出
             //     frame输出顺序是按pts的顺序，如IBBPBBP
             //     frame->pkt_pos变量是此frame对应的packet在视频文件中的偏移地址，值同pkt.pos
@@ -26,9 +29,9 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, AVFrame *frame)
         }
         else if (dec_ctx->codec_type ==  AVMEDIA_TYPE_AUDIO)
         {
-            // 3.2 一个音频packet含一至多个音频frame，每次avcodec_receive_frame()返回一个frame，此函数返回。
-            // 下次进来此函数，继续获取一个frame，直到avcodec_receive_frame()返回AVERROR(EAGAIN)，
-            // 表示解码器需要填入新的音频packet
+            // 2.2 一个音频packet含一至多个音频frame，每次avcodec_receive_frame()返回一个frame，此函数返回。
+            //     下次进来此函数，继续获取一个frame，直到avcodec_receive_frame()返回AVERROR(EAGAIN)，
+            //     表示解码器需要填入新的音频packet
             ret = avcodec_receive_frame(dec_ctx, frame);
             if (ret >= 0)
             {
@@ -41,44 +44,69 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, AVFrame *frame)
             }
         }
 
-        if (ret >= 0)
+        if (ret >= 0)                   // 成功解码得到一个视频帧或一个音频帧，则返回
         {
-            return 1;   // 成功解码得到一个视频帧或一个音频帧，则返回
+            return 1;   
         }
-        else if (ret == AVERROR_EOF)
+        else if (ret == AVERROR_EOF)    // 解码器已冲洗，解码中所有帧已取出
         {
             avcodec_flush_buffers(dec_ctx);
             av_log(NULL, AV_LOG_INFO, "Decoder has been flushed\n");
             return ret;
         }
-        else if (ret == AVERROR(EAGAIN))
+        else if (ret == AVERROR(EAGAIN))// 解码器需要喂数据
         {
+            if (send)   // 本函数中已向解码器喂过数据，因此需要从文件读取新数据
+            {
+                return ret;
+            }
+        }
+        else                            // 错误
+        {
+            return ret;
         }
 
-
         /*
-        if (packet == NULL)
+        if (packet == NULL || (packet->data == NULL && packet->size == 0))
         {
             // 复位解码器内部状态/刷新内部缓冲区。当seek操作或切换流时应调用此函数。
             avcodec_flush_buffers(dec_ctx);
         }
         */
 
-        // 2. 将packet发送给解码器
+        // 1. 将packet发送给解码器
         //    发送packet的顺序是按dts递增的顺序，如IPBBPBB
         //    pkt.pos变量可以标识当前packet在视频文件中的地址偏移
+        //    发送第一个 flush packet 会返回成功，后续的 flush packet 会返回AVERROR_EOF
         ret = avcodec_send_packet(dec_ctx, packet);
         av_packet_unref(packet);
-        if (ret == AVERROR(EAGAIN))
-        {
-            av_log(NULL, AV_LOG_ERROR, "Receive_frame and send_packet both returned EAGAIN, "
-                                       "which is an API violation.\n");
-        }
+        send = true;
         
         if (ret != 0)
         {
+            av_log(NULL, AV_LOG_ERROR, "avcodec_send_packet() error, return %d\n", ret);
             return ret;
         }
     }
+
+    return -1;
+}
+
+int av_encode_frame(AVCodecContext *enc_ctx, AVFrame *frame, AVPacket *packet)
+{
+    int ret = AVERROR(EAGAIN);
+    bool send = false;
+
+    ret = avcodec_send_frame(enc_ctx, frame);
+    if (ret == AVERROR(EAGAIN))
+    {
+        return ret;
+    }
+    else if (ret == AVERROR_EOF)
+    {
+        return ret;
+    }
+
+    ret = avcodec_receive_packet(enc_ctx, packet);
 }
 

@@ -1,4 +1,7 @@
-#include "video_filter.h"
+#include <libavutil/opt.h>
+#include <libavutil/pixfmt.h>
+#include <libavutil/channel_layout.h>
+#include "av_filter.h"
 
 // 创建配置一个滤镜图，在后续滤镜处理中，可以往此滤镜图输入数据并从滤镜图获得输出数据
 // @filters_descr: I, 以字符串形式描述的滤镜图，形如"transpose=cclock,pad=iw*2:ih"
@@ -161,16 +164,13 @@ int init_audio_filters(const char *filters_descr,
     char *p_args = NULL;
     if (iafmt != NULL)
     {
+        uint64_t channel_layout = iafmt->channel_layout > 0 ? iafmt->channel_layout :
+                                  av_get_default_channel_layout(iafmt->nb_channels);
         // args是abuffersrc滤镜的参数
-        if (iafmt->channel_layout == 0)
-        {
-            iafmt->channel_layout = av_get_default_channel_layout(dec_ctx->channels);
-        }
         snprintf(args, sizeof(args),
                 "time_base=%d/%d:sample_rate=%d:sample_fmt=%s:channel_layout=0x%"PRIx64,
                 iafmt->time_base.num, iafmt->time_base.den, iafmt->sample_rate,
-                av_get_sample_fmt_name(iafmt->sample_fmt),
-                iafmt->channel_layout);
+                av_get_sample_fmt_name(iafmt->sample_fmt), channel_layout);
         p_args = args;
     }
 
@@ -301,7 +301,7 @@ int deinit_filters(filter_ctx_t *fctx)
     return 0;
 }
 
-int filtering_video_frame(const filter_ctx_t *fctx, AVFrame *frame_in, AVFrame *frame_out)
+int filtering_frame(const filter_ctx_t *fctx, AVFrame *frame_in, AVFrame *frame_out)
 {
     int ret;
     

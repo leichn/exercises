@@ -7,6 +7,9 @@
  *   2018-12-06 - [lei]     Playing audio&vidio
  *   2019-01-06 - [lei]     Add audio resampling, fix bug of unsupported audio 
  *                          format(such as planar)
+ *   2019-03-01 - [lei]     Fix segmentation fault.
+ *                          Delete variable s_input_finished.
+ *                          Exit when playing finished.
  *
  * details:
  *   A simple ffmpeg player.
@@ -64,7 +67,6 @@ static struct SwrContext *s_audio_swr_ctx;
 static uint8_t *s_resample_buf = NULL;  // 重采样输出缓冲区
 static int s_resample_buf_len = 0;      // 重采样输出缓冲区长度
 
-static bool s_input_finished = false;   // 文件读取完毕
 static bool s_adecode_finished = false; // 解码完毕
 static bool s_vdecode_finished = false; // 解码完毕
 
@@ -78,16 +80,22 @@ void packet_queue_init(packet_queue_t *q)
     q->cond = SDL_CreateCond();
 }
 
-// 写队列尾部。pkt是一包还未解码的音频数据
+int packet_queue_num(packet_queue_t *q)
+{
+    return q->nb_packets;
+}
+
+// 写队列尾部。pkt是一包还未解码的音视频数据
 int packet_queue_push(packet_queue_t *q, AVPacket *pkt)
 {
     AVPacketList *pkt_list;
-    
-    if (av_packet_make_refcounted(pkt) < 0)
+
+    if ((pkt != NULL) && (pkt->data != NULL) && (av_packet_make_refcounted(pkt) < 0))
     {
         printf("[pkt] is not refrence counted\n");
         return -1;
     }
+    
     pkt_list = av_malloc(sizeof(AVPacketList));
     if (!pkt_list)
     {
@@ -140,11 +148,6 @@ int packet_queue_pop(packet_queue_t *q, AVPacket *pkt, int block)
             *pkt = p_pkt_node->pkt;
             av_free(p_pkt_node);
             ret = 1;
-            break;
-        }
-        else if (s_input_finished)  // 队列已空，文件已处理完
-        {
-            ret = 0;
             break;
         }
         else if (!block)            // 队列空且阻塞标志无效，则立即退出
@@ -318,7 +321,6 @@ int audio_decode_frame(AVCodecContext *p_codec_ctx, AVPacket *p_packet, uint8_t 
             if (ret != 0)
             {
                 printf("avcodec_send_packet() failed %d\n", ret);
-                av_packet_unref(p_packet);
                 res = -1;
                 goto exit;
             }
@@ -358,6 +360,8 @@ void sdl_audio_callback(void *userdata, uint8_t *stream, int len)
     {
         if (s_adecode_finished)
         {
+            SDL_PauseAudio(1);
+            printf("pause audio callback\n");
             return;
         }
 
@@ -367,19 +371,10 @@ void sdl_audio_callback(void *userdata, uint8_t *stream, int len)
             p_packet = (AVPacket *)av_malloc(sizeof(AVPacket));
             
             // 1. 从队列中读出一包音频数据
-            if (packet_queue_pop(&s_audio_pkt_queue, p_packet, 1) <= 0)
+            if (packet_queue_pop(&s_audio_pkt_queue, p_packet, 1) == 0)
             {
-                if (s_input_finished)
-                {
-                    av_packet_unref(p_packet);
-                    p_packet = NULL;    // flush decoder
-                    printf("Flushing audio decoder...\n");
-                }
-                else
-                {
-                    av_packet_unref(p_packet);
-                    return;
-                }
+                printf("audio packet buffer empty...\n");
+                continue;
             }
 
             // 2. 解码音频包
@@ -577,58 +572,69 @@ int video_thread(void *arg)
     sdl_rect.w = p_codec_ctx->width;
     sdl_rect.h = p_codec_ctx->height;
 
+    bool flush = false;
+
     while (1)
     {
         if (s_vdecode_finished)
         {
             break;
         }
+
+        if (!flush)
+        {
+            // A3. 从队列中读出一包视频数据
+            if (packet_queue_pop(&s_video_pkt_queue, p_packet, 0) == 0)
+            {
+                printf("video packet queue empty...\n");
+                av_usleep(10000);
+                continue;
+            }
+
+            // A4. 视频解码：packet ==> frame
+            // A4.1 向解码器喂数据，一个packet可能是一个视频帧或多个音频帧，此处音频帧已被上一句滤掉
+            //      第一个 flush packet 会返回成功，后续的 flush packet 会返回AVERROR_EOF
+            ret = avcodec_send_packet(p_codec_ctx, p_packet);
+            if (ret != 0)
+            {
+                if (ret == AVERROR_EOF)
+                {
+                    printf("video avcodec_send_packet(): the decoder has been flushed\n");
+                    printf("test unref null packet\n");
+                    av_packet_unref(NULL);
+                }
+                else if (ret == AVERROR(EAGAIN))
+                {
+                    printf("video avcodec_send_packet(): input is not accepted in the current state\n");
+                }
+                else if (ret == AVERROR(EINVAL))
+                {
+                    printf("video avcodec_send_packet(): codec not opened, it is an encoder, or requires flush\n");
+                }
+                else if (ret == AVERROR(ENOMEM))
+                {
+                    printf("video avcodec_send_packet(): failed to add packet to internal queue, or similar\n");
+                }
+                else
+                {
+                    printf("video avcodec_send_packet(): legitimate decoding errors\n");
+                }
+
+                res = -1;
+                goto exit6;
+            }
+            
+            if (p_packet->data == NULL)
+            {
+                printf("flush video decoder\n");
+                flush = true;
+                // av_packet_unref(NULL);       // 此句会段错误
+                // av_packet_unref(p_packet);   // 此句正常
+            }
+
+            av_packet_unref(p_packet);
+        }
         
-        // A3. 从队列中读出一包视频数据
-        if (packet_queue_pop(&s_video_pkt_queue, p_packet, 1) <= 0)
-        {
-            if (s_input_finished)
-            {
-                av_packet_unref(p_packet);
-                p_packet = NULL;    // flush decoder
-                printf("Flushing video decoder...\n");
-            }
-            else
-            {
-                av_packet_unref(p_packet);
-                return;
-            }
-        }
-
-        // A4. 视频解码：packet ==> frame
-        // A4.1 向解码器喂数据，一个packet可能是一个视频帧或多个音频帧，此处音频帧已被上一句滤掉
-        ret = avcodec_send_packet(p_codec_ctx, p_packet);
-        if (ret != 0)
-        {
-            if (ret == AVERROR_EOF)
-            {
-                printf("video avcodec_send_packet(): the decoder has been flushed\n");
-            }
-            else if (ret == AVERROR(EAGAIN))
-            {
-                printf("video avcodec_send_packet(): input is not accepted in the current state\n");
-            }
-            else if (ret == AVERROR(EINVAL))
-            {
-                printf("video avcodec_send_packet(): codec not opened, it is an encoder, or requires flush\n");
-            }
-            else if (ret == AVERROR(ENOMEM))
-            {
-                printf("video avcodec_send_packet(): failed to add packet to internal queue, or similar\n");
-            }
-            else
-            {
-                printf("video avcodec_send_packet(): legitimate decoding errors\n");
-            }
-
-            res = -1;
-            goto exit5;
-        }
         // A4.2 接收解码器输出的数据，此处只处理视频帧，每次接收一个packet，将之解码得到一个frame
         ret = avcodec_receive_frame(p_codec_ctx, p_frm_raw);
         if (ret != 0)
@@ -695,10 +701,6 @@ int video_thread(void *arg)
         
         // B7. 执行渲染，更新屏幕显示
         SDL_RenderPresent(sdl_renderer);
-        if (p_packet != NULL)
-        {
-            av_packet_unref(p_packet);
-        }
 
         SDL_WaitEvent(&sdl_event);
     }
@@ -975,30 +977,71 @@ int main(int argc, char *argv[])
     //     对于视频来说，一个packet只包含一个frame
     //     对于音频来说，若是帧长固定的格式则一个packet可包含多个(完整)frame，
     //                   若是帧长可变的格式则一个packet只包含一个frame
-    while (av_read_frame(p_fmt_ctx, p_packet) == 0)
+    while (1)
     {
-        if (p_packet->stream_index == a_idx)
+        if (packet_queue_num(&s_video_pkt_queue) > 100 ||
+            packet_queue_num(&s_audio_pkt_queue) > 500)
         {
-            packet_queue_push(&s_audio_pkt_queue, p_packet);
+            av_usleep(10000);
+            continue;
         }
-        else if (p_packet->stream_index == v_idx)
+        
+        ret = av_read_frame(p_fmt_ctx, p_packet);
+
+        if (ret < 0)
         {
-            packet_queue_push(&s_video_pkt_queue, p_packet);
+            if ((ret == AVERROR_EOF) || avio_feof(p_fmt_ctx->pb))
+            {
+                printf("read end of file\n");
+                p_packet->data = NULL;
+                p_packet->size = 0;
+                
+                // 输入文件已读完，发送NULL packet以冲洗(flush)解码器，否则解码器中缓存的帧取不出来
+                if (v_idx != -1)
+                {
+                    printf("push a flush packet into video queue\n");
+                    packet_queue_push(&s_video_pkt_queue, p_packet);
+                }
+
+                if (a_idx != -1)
+                {
+                    printf("push a flush packet into audio queue\n");
+                    packet_queue_push(&s_audio_pkt_queue, p_packet);
+                }
+                
+                break;
+            }
+            else
+            {
+                printf("read unexpected error\n");
+                goto exit3;
+            }
         }
         else
         {
-            av_packet_unref(p_packet);
+            if (p_packet->stream_index == a_idx)
+            {
+                packet_queue_push(&s_audio_pkt_queue, p_packet);
+                // 此处不能av_packet_unref(p_packet)，因为后面还要使用
+            }
+            else if (p_packet->stream_index == v_idx)
+            {
+                packet_queue_push(&s_video_pkt_queue, p_packet);
+            }
+            else
+            {
+                av_packet_unref(p_packet);
+            }
         }
     }
-    printf("all packet readout\n");
-    SDL_Delay(40);
-    s_input_finished = true;
 
     while (((a_idx >= 0) && (!s_adecode_finished)) || 
            ((v_idx >= 0) && (!s_vdecode_finished)))
     {
         SDL_Delay(100);
     }
+
+    printf("play finishied. exit now...");
 
     SDL_Delay(200);
 
@@ -1011,6 +1054,4 @@ exit1:
 exit0:
     return res;
 }
-
-
 

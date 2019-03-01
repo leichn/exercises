@@ -32,6 +32,7 @@ typedef struct {
     AVRational time_base;
     AVRational sample_rate;
     uint64_t channel_layout;
+    int nb_channels;
 }   filter_iafmt_t;
 
 typedef struct {
@@ -40,9 +41,12 @@ typedef struct {
     uint64_t *channel_layouts;
 }   filter_oafmt_t;
 
-int init_filters(const char *filters_descr, const input_vfmt_t *vfmt, filter_ctx_t *fctx);
+int init_video_filters(const char *filters_descr, const filter_ivfmt_t *ivfmt, 
+                       const filter_ovfmt_t *ovfmt, filter_ctx_t *fctx);
+int init_audio_filters(const char *filters_descr, const filter_iafmt_t *ivfmt, 
+                       const filter_oafmt_t *ovfmt, filter_ctx_t *fctx);
 int deinit_filters(filter_ctx_t *fctx);
-int filtering_video_frame(const filter_ctx_t *fctx, AVFrame *frame_in, AVFrame *frame_out);
+int filtering_frame(const filter_ctx_t *fctx, AVFrame *frame_in, AVFrame *frame_out);
 
 #endif
 
