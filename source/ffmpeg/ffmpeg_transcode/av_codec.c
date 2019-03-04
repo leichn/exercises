@@ -94,19 +94,44 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, AVFrame *frame)
 
 int av_encode_frame(AVCodecContext *enc_ctx, AVFrame *frame, AVPacket *packet)
 {
-    int ret = AVERROR(EAGAIN);
-    bool send = false;
-
-    ret = avcodec_send_frame(enc_ctx, frame);
-    if (ret == AVERROR(EAGAIN))
+    if (enc_ctx->codec_type == AVMEDIA_TYPE_AUDIO)
     {
+        
+    }
+    /*
+      For audio:
+      If AV_CODEC_CAP_VARIABLE_FRAME_SIZE is set, then each frame
+      can have any number of samples.
+      If it is not set, frame->nb_samples must be equal to
+      avctx->frame_size for all frames except the last.
+      The final frame may be smaller than avctx->frame_size.
+    */
+    int ret = avcodec_send_frame(enc_ctx, frame);
+    if (ret == AVERROR_EOF)
+    {
+        av_log(NULL, AV_LOG_INFO, "avcodec_send_frame() encoder flushed\n");
         return ret;
     }
-    else if (ret == AVERROR_EOF)
+    else if (ret == AVERROR(EAGAIN))
     {
+        av_log(NULL, AV_LOG_INFO, "avcodec_send_frame() need output read out\n");
+    }
+    else if (ret < 0)
+    {
+        av_log(NULL, AV_LOG_INFO, "avcodec_send_frame() error %d\n", ret);
         return ret;
     }
 
     ret = avcodec_receive_packet(enc_ctx, packet);
+    if (ret == AVERROR_EOF)
+    {
+        av_log(NULL, AV_LOG_INFO, "avcodec_receive_packet() encoder flushed\n");
+    }
+    else if (ret == AVERROR(EAGAIN))
+    {
+        av_log(NULL, AV_LOG_INFO, "avcodec_receive_packet() need more input\n");
+    }
+
+    return ret;
 }
 

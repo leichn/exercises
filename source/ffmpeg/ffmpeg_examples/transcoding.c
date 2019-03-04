@@ -335,6 +335,7 @@ static int init_filter(FilteringContext* fctx, AVCodecContext *dec_ctx,
             goto end;
         }
 
+        // 将输出采样格式设置为编码器采用的采样格式
         ret = av_opt_set_bin(buffersink_ctx, "sample_fmts",
                 (uint8_t*)&enc_ctx->sample_fmt, sizeof(enc_ctx->sample_fmt),
                 AV_OPT_SEARCH_CHILDREN);
@@ -352,6 +353,7 @@ static int init_filter(FilteringContext* fctx, AVCodecContext *dec_ctx,
             goto end;
         }
 
+        // 将输出采样率设置为编码器采用的采样率
         ret = av_opt_set_bin(buffersink_ctx, "sample_rates",
                 (uint8_t*)&enc_ctx->sample_rate, sizeof(enc_ctx->sample_rate),
                 AV_OPT_SEARCH_CHILDREN);

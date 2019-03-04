@@ -3,6 +3,40 @@
 #include <libavutil/channel_layout.h>
 #include "av_filter.h"
 
+void get_filter_ivfmt(const inout_ctx_t *ictx, int stream_idx, filter_ivfmt_t *ivfmt)
+{
+    ivfmt->width = ictx->codec_ctx[stream_idx]->width;
+    ivfmt->height = ictx->codec_ctx[stream_idx]->height;
+    ivfmt->pix_fmt = ictx->codec_ctx[stream_idx]->pix_fmt;
+    ivfmt->sar = ictx->codec_ctx[stream_idx]->sample_aspect_ratio;
+    ivfmt->time_base = ictx->fmt_ctx->streams[stream_idx]->time_base;
+    ivfmt->frame_rate = ictx->fmt_ctx->streams[stream_idx]->avg_frame_rate;
+    av_log(NULL, AV_LOG_INFO, "get video format: "
+            "%dx%d, pix_fmt %d, SAR %d/%d, tb {%d, %d}, rate {%d, %d}\n",
+            ivfmt->width, ivfmt->height, ivfmt->pix_fmt,
+            ivfmt->sar.num, ivfmt->sar.den,
+            ivfmt->time_base.num, ivfmt->time_base.den,
+            ivfmt->frame_rate.num, ivfmt->frame_rate.den);
+}
+
+void get_filter_ovfmt(const inout_ctx_t *octx, int stream_idx, filter_ovfmt_t *ovfmt)
+{
+}
+
+void get_filter_iafmt(const inout_ctx_t *ictx, int stream_idx, filter_iafmt_t *iafmt)
+{
+    iafmt->sample_fmt = ictx->codec_ctx[stream_idx]->sample_fmt;
+    iafmt->sample_rate = ictx->codec_ctx[stream_idx]->sample_rate;
+    iafmt->nb_channels = ictx->codec_ctx[stream_idx]->channels;
+    iafmt->channel_layout = ictx->codec_ctx[stream_idx]->channel_layout;
+    iafmt->time_base = ictx->codec_ctx[stream_idx]->time_base;
+}
+
+void get_filter_oafmt(const inout_ctx_t *octx, int stream_idx, filter_oafmt_t *oafmt)
+{
+}
+
+
 // 创建配置一个滤镜图，在后续滤镜处理中，可以往此滤镜图输入数据并从滤镜图获得输出数据
 // @filters_descr: I, 以字符串形式描述的滤镜图，形如"transpose=cclock,pad=iw*2:ih"
 // @vfmt:          I, 输入图像格式，用于设置滤镜图输入节点(buffer滤镜)
@@ -64,7 +98,7 @@ int init_video_filters(const char *filters_descr,
     }
 
     // 设置输出像素格式为pix_fmts[]中指定的格式(如果要用SDL显示，则这些格式应是SDL支持格式)
-    ret = av_opt_set_int_list(&fctx->bufsink_ctx, "pix_fmts", ovfmt->pix_fmts,
+    ret = av_opt_set_int_list(fctx->bufsink_ctx, "pix_fmts", ovfmt->pix_fmts,
                               AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "Cannot set output pixel format\n");
@@ -218,8 +252,7 @@ int init_audio_filters(const char *filters_descr,
     }
     
     ret = av_opt_set_int_list(fctx->bufsink_ctx, "sample_rates",
-            oafmt->sample_rates, -1,
-            AV_OPT_SEARCH_CHILDREN);
+            oafmt->sample_rates, -1, AV_OPT_SEARCH_CHILDREN);
     if (ret < 0)
     {
         av_log(NULL, AV_LOG_ERROR, "Cannot set output sample rate\n");

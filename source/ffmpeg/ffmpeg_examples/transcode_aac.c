@@ -336,10 +336,6 @@ static int init_fifo(AVAudioFifo **fifo, AVCodecContext *output_codec_context)
         fprintf(stderr, "Could not allocate FIFO\n");
         return AVERROR(ENOMEM);
     }
-
-    int size = av_audio_fifo_size(*fifo);
-    int space = av_audio_fifo_space(*fifo);
-    printf("init fifo size %d, space %d\n", size, space);
     
     return 0;
 }

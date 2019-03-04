@@ -5,6 +5,20 @@
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
 #include <libavutil/frame.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+
+typedef struct {
+    AVFormatContext* fmt_ctx;
+    AVCodecContext** codec_ctx;     // AVCodecContext* codec_ctx[];
+    AVAudioFifo**    audio_fifo;    // AVAudioFifo* audio_fifo[];
+}   inout_ctx_t;
+
+typedef struct {
+    AVCodecContext *dec_ctx;
+    AVCodecContext *enc_ctx;
+}   stream_codec_ctx_t;
+
 
 typedef struct {
     AVFilterContext *bufsink_ctx;
@@ -29,15 +43,15 @@ typedef struct {
 
 typedef struct {
     enum AVSampleFormat sample_fmt;
-    AVRational time_base;
-    AVRational sample_rate;
+    int sample_rate;
     uint64_t channel_layout;
     int nb_channels;
+    AVRational time_base;
 }   filter_iafmt_t;
 
 typedef struct {
     enum AVSampleFormat *sample_fmts;
-    AVRational *sample_rates;
+    int *sample_rates;
     uint64_t *channel_layouts;
 }   filter_oafmt_t;
 
@@ -46,6 +60,8 @@ int init_video_filters(const char *filters_descr, const filter_ivfmt_t *ivfmt,
 int init_audio_filters(const char *filters_descr, const filter_iafmt_t *ivfmt, 
                        const filter_oafmt_t *ovfmt, filter_ctx_t *fctx);
 int deinit_filters(filter_ctx_t *fctx);
+void get_filter_ivfmt(const inout_ctx_t *ictx, int stream_idx, filter_ivfmt_t *ivfmt);
+void get_filter_iafmt(const inout_ctx_t *ictx, int stream_idx, filter_iafmt_t *iafmt);
 int filtering_frame(const filter_ctx_t *fctx, AVFrame *frame_in, AVFrame *frame_out);
 
 #endif

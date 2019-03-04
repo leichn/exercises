@@ -38,46 +38,6 @@
 #include "av_filter.h"
 #include "av_codec.h"
 
-typedef struct {
-    AVFormatContext* fmt_ctx;
-    AVCodecContext** codec_ctx; // AVCodecContext* codec_ctx[];
-    int              video_idx;
-    int              frame_rate;
-}   inout_ctx_t;
-
-static void get_filter_ivfmt(const inout_ctx_t *ictx, int stream_idx, filter_ivfmt_t *ivfmt)
-{
-    ivfmt->width = ictx->codec_ctx[stream_idx]->width;
-    ivfmt->height = ictx->codec_ctx[stream_idx]->height;
-    ivfmt->pix_fmt = ictx->codec_ctx[stream_idx]->pix_fmt;
-    ivfmt->sar = ictx->codec_ctx[stream_idx]->sample_aspect_ratio;
-    ivfmt->time_base = ictx->fmt_ctx->streams[stream_idx]->time_base;
-    ivfmt->frame_rate = ictx->fmt_ctx->streams[stream_idx]->avg_frame_rate;
-    av_log(NULL, AV_LOG_INFO, "get video format: "
-            "%dx%d, pix_fmt %d, SAR %d/%d, tb {%d, %d}, rate {%d, %d}\n",
-            ivfmt->width, ivfmt->height, ivfmt->pix_fmt,
-            ivfmt->sar.num, ivfmt->sar.den,
-            ivfmt->time_base.num, ivfmt->time_base.den,
-            ivfmt->frame_rate.num, ivfmt->frame_rate.den);
-}
-
-static void get_filter_ovfmt(const inout_ctx_t *octx, int stream_idx, filter_ovfmt_t *ovfmt)
-{
-    enum AVPixelFormat *pix_fmts;
-
-}
-
-static void get_filter_iafmt(const inout_ctx_t *ictx, int stream_idx, filter_iafmt_t *iafmt)
-{
-
-}
-
-static void get_filter_oafmt(const inout_ctx_t *octx, int stream_idx, filter_oafmt_t *oafmt)
-{
-
-}
-
-
 static int open_input_file(const char *filename, inout_ctx_t *ictx)
 {
     int ret;
@@ -183,6 +143,12 @@ static int open_output_file(const char *filename, const inout_ctx_t *ictx, inout
         return AVERROR(ENOMEM);
     }
 
+    AVAudioFifo **pp_audio_fifo = av_mallocz_array(ofmt_ctx->nb_streams, sizeof(AVAudioFifo *));
+    if (!pp_enc_ctx)
+    {
+        return AVERROR(ENOMEM);
+    }
+
     AVFormatContext *ifmt_ctx = ictx->fmt_ctx;
     for (i = 0; i < ifmt_ctx->nb_streams; i++)
     {
@@ -246,6 +212,18 @@ static int open_output_file(const char *filename, const inout_ctx_t *ictx, inout
                 /* take first format from list of supported formats */
                 enc_ctx->sample_fmt = encoder->sample_fmts[0];  // 编码器采用所支持的第一种采样格式
                 enc_ctx->time_base = (AVRational){1, enc_ctx->sample_rate}; // 时基：编码器采样率取倒数
+                // enc_ctx->codec->capabilities |= AV_CODEC_CAP_VARIABLE_FRAME_SIZE; // 只读标志
+
+                // 初始化一个FIFO用于存储待编码的音频帧，初始化FIFO大小的1个采样点
+                // av_audio_fifo_alloc()第二个参数是声道数，第三个参数是单个声道的采样点数
+                // 采样格式及声道数在初始化FIFO时已设置，各处涉及FIFO大小的地方都是用的单个声道的采样点数
+                pp_audio_fifo[i] = av_audio_fifo_alloc(enc_ctx->sample_fmt, enc_ctx->channels, 1)
+                if (pp_audio_fifo == NULL)
+                {
+                    av_log(NULL, AV_LOG_ERROR, "Could not allocate FIFO\n");
+                    return AVERROR(ENOMEM);
+                }
+
             }
 
             // TODO: 这个标志还不懂，以后研究
@@ -317,6 +295,7 @@ static int open_output_file(const char *filename, const inout_ctx_t *ictx, inout
 
     octx->fmt_ctx = ofmt_ctx;
     octx->codec_ctx = pp_enc_ctx;
+    octx->audio_fifo = pp_audio_fifo;
 
     return 0;
 }
@@ -325,11 +304,11 @@ static int open_output_file(const char *filename, const inout_ctx_t *ictx, inout
 // 目的是：通过视频buffersink滤镜将视频流输出像素格式转换为编码器采用的像素格式
 //         通过音频abuffersink滤镜将音频流输出声道布局转换为编码器采用的声道布局
 //         为下一步的编码操作作好准备
-static int init_filters(const inout_ctx_t *ictx, const inout_ctx_t *octx, filter_ctx_t *fctxs[])
+static int init_filters(const inout_ctx_t *ictx, const inout_ctx_t *octx, filter_ctx_t **pp_fctxs)
 {
     int nb_streams = ictx->fmt_ctx->nb_streams;
-    fctxs = av_malloc_array(nb_streams, sizeof(*(*fctxs)));
-    if (!fctxs)
+    filter_ctx_t *p_fctxs = av_malloc_array(nb_streams, sizeof(*p_fctxs));
+    if (!p_fctxs)
     {
         return AVERROR(ENOMEM);
     }
@@ -339,26 +318,44 @@ static int init_filters(const inout_ctx_t *ictx, const inout_ctx_t *octx, filter
     filter_iafmt_t iafmt;
     filter_oafmt_t oafmt;
     enum AVMediaType codec_type;
+    AVCodecContext *p_codec_ctx;
     for (int i = 0; i < nb_streams; i++)
     {
         codec_type = ictx->fmt_ctx->streams[i]->codecpar->codec_type;
-
+        p_codec_ctx = octx->codec_ctx[i];
+        
         int ret = 0;
         if (codec_type == AVMEDIA_TYPE_VIDEO)
         {
             get_filter_ivfmt(ictx, i, &ivfmt);
+            #if 0
             get_filter_ovfmt(octx, i, &ovfmt);
-            ret = init_video_filters("null", &ivfmt, &ovfmt, fctxs[i]);
+            #else
+            enum AVPixelFormat pix_fmts[] = { octx->codec_ctx[i]->pix_fmt, AV_PIX_FMT_NONE};
+            ovfmt.pix_fmts = pix_fmts;
+            #endif
+            ret = init_video_filters("null", &ivfmt, &ovfmt, &p_fctxs[i]);
         }
         else if (codec_type == AVMEDIA_TYPE_AUDIO)
         {
             get_filter_iafmt(ictx, i, &iafmt);
+            #if 0
             get_filter_oafmt(octx, i, &oafmt);
-            ret = init_audio_filters("anull", &iafmt, &oafmt, fctxs[i]);
+            #else
+            enum AVSampleFormat sample_fmts[] = { octx->codec_ctx[i]->sample_fmt, -1 };
+            int sample_rates[] = { octx->codec_ctx[i]->sample_rate, -1 };
+            uint64_t channel_layouts[] = { octx->codec_ctx[i]->channel_layout, -1 };
+            oafmt.sample_fmts = sample_fmts;
+            oafmt.sample_rates = sample_rates;
+            oafmt.channel_layouts = channel_layouts;
+            #endif
+            ret = init_audio_filters("anull", &iafmt, &oafmt, &p_fctxs[i]);
         }
         else
         {
-            fctxs[i] = NULL;
+            p_fctxs[i].bufsink_ctx = NULL;
+            p_fctxs[i].bufsrc_ctx = NULL;
+            p_fctxs[i].filter_graph = NULL;
         }
 
         if (ret < 0)
@@ -366,6 +363,9 @@ static int init_filters(const inout_ctx_t *ictx, const inout_ctx_t *octx, filter
             return ret;
         }
     }
+
+    *pp_fctxs = p_fctxs;
+
     return 0;
 }
 
@@ -396,8 +396,7 @@ int main(int argc, char **argv)
     int ret;
     AVPacket ipacket = { .data = NULL, .size = 0 };
     AVPacket opacket = { .data = NULL, .size = 0 };
-    AVFrame *frame = NULL;
-    AVFrame *frame_flt = NULL;
+
     enum AVMediaType type;
     unsigned int stream_index;
     unsigned int i;
@@ -408,25 +407,40 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    printf("ERROR CODE: \n"
+           "AVERROR(EAGAIN) %d\nAVERROR_EOF %d\nAVERROR(EINVAL) %d\nAVERROR(ENOMEM) %d\n", 
+           AVERROR(EAGAIN), AVERROR_EOF, AVERROR(EINVAL), AVERROR(ENOMEM));
+
     // 1. 初始化：打开输入，打开输出，初始化滤镜
     inout_ctx_t ictx;
-    if ((ret = open_input_file(argv[1], &ictx)) < 0)
+    ret = open_input_file(argv[1], &ictx);
+    if (ret < 0)
     {
         goto end;
     }
     inout_ctx_t octx;
-    if ((ret = open_output_file(argv[2], &ictx, &octx)) < 0)
+    ret = open_output_file(argv[2], &ictx, &octx);
+    if (ret < 0)
     {
         goto end;
     }
     filter_ctx_t *fctxs;
-    if ((ret = init_filters(&ictx, &octx, &fctxs)) < 0)
+    ret = init_filters(&ictx, &octx, &fctxs);
+    if (ret < 0)
     {
         goto end;
     }
 
-    /* read all packets */
-    while (1) {
+    AVFrame *frame = av_frame_alloc();
+    AVFrame *frame_flt = av_frame_alloc();
+    if (!frame || !frame_flt)
+    {
+        perror("Could not allocate frame");
+        exit(1);
+    }
+
+    while (1)
+    {
         // 2. 从输入文件读取packet
         ret = av_read_frame(ictx.fmt_ctx, &ipacket);
         if (ret < 0)
@@ -434,7 +448,8 @@ int main(int argc, char **argv)
             if ((ret == AVERROR_EOF) || avio_feof(ictx.fmt_ctx->pb))
             {
                 // 输入文件已读完，发送NULL packet以冲洗(flush)解码器，否则解码器中缓存的帧取不出来
-                
+                av_log(NULL, AV_LOG_INFO, "av_read_frame() end of file\n");
+                break;
             }
             else
             {
@@ -448,7 +463,7 @@ int main(int argc, char **argv)
 
         if ((codec_type == AVMEDIA_TYPE_VIDEO) || (codec_type == AVMEDIA_TYPE_AUDIO))
         {
-            while (1)
+            while (1)   // 处理一个packet
             {
                 ret = av_decode_frame(ictx.codec_ctx[stream_index], &ipacket, frame);
                 if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
@@ -464,6 +479,27 @@ int main(int argc, char **argv)
                 if (ret < 0)
                 {
                     goto end;
+                }
+
+                // 音频帧特殊处理
+                if (codec_type == AVMEDIA_TYPE_AUDIO)
+                {
+                    // FIFO中可读数据小于编码器帧尺寸，则继续往FIFO中写数据
+                    while (av_audio_fifo_size(fifo) < output_frame_size) {
+                        /* Decode one frame worth of audio samples, convert it to the
+                         * output sample format and put it into the FIFO buffer. */
+                        // 从输入文件读取数据，解码，重采样，然后存入FIFO
+                        if (read_decode_convert_and_store(fifo, input_format_context,
+                                                          input_codec_context,
+                                                          output_codec_context,
+                                                          resample_context, &finished))
+                            goto cleanup;
+
+                        /* If we are at the end of the input file, we continue
+                         * encoding the remaining audio samples to the output file. */
+                        if (finished)   //若到文件尾则退出
+                            break;
+                    }
                 }
 
                 ret = av_encode_frame(octx.codec_ctx[stream_index], frame_flt, &opacket);
