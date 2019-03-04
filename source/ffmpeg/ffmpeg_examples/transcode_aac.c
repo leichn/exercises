@@ -328,11 +328,19 @@ static int init_resampler(AVCodecContext *input_codec_context,
 static int init_fifo(AVAudioFifo **fifo, AVCodecContext *output_codec_context)
 {
     /* Create the FIFO buffer based on the specified output sample format. */
+    // 初始化一个FIFO用于存储待编码的音频帧，初始化FIFO大小的1个采样点
+    // av_audio_fifo_alloc()第二个参数是声道数，第三个参数是单个声道的采样点数
+    // 采样格式及声道数在初始化FIFO时已设置，各处涉及FIFO大小的地方都是用的单个声道的采样点数
     if (!(*fifo = av_audio_fifo_alloc(output_codec_context->sample_fmt,
                                       output_codec_context->channels, 1))) {
         fprintf(stderr, "Could not allocate FIFO\n");
         return AVERROR(ENOMEM);
     }
+
+    int size = av_audio_fifo_size(*fifo);
+    int space = av_audio_fifo_space(*fifo);
+    printf("init fifo size %d, space %d\n", size, space);
+    
     return 0;
 }
 
@@ -365,6 +373,7 @@ static int write_output_file_header(AVFormatContext *output_format_context)
  *                                  function has to be called again.
  * @return Error code (0 if successful)
  */
+// 从输入文件中读取一个packet，解码后输出
 static int decode_audio_frame(AVFrame *frame,
                               AVFormatContext *input_format_context,
                               AVCodecContext *input_codec_context,
@@ -434,6 +443,8 @@ cleanup:
  *                                     each round
  * @return Error code (0 if successful)
  */
+// 分配临时缓冲区，用于存储重采样后的音频帧
+// 一个音频帧中可能含多个声道，每声道一个缓冲区
 static int init_converted_samples(uint8_t ***converted_input_samples,
                                   AVCodecContext *output_codec_context,
                                   int frame_size)
@@ -444,6 +455,10 @@ static int init_converted_samples(uint8_t ***converted_input_samples,
      * Each pointer will later point to the audio samples of the corresponding
      * channels (although it may be NULL for interleaved formats).
      */
+    // 为每个声道分配一个指针(只是分配指针，不是分配指针指向的缓冲区)
+    // (*converted_input_samples)是指向多个指针的指针，如果是双声道音频格式，则
+    // 此处calloc分配的缓冲区只包含两个uint8_t类型指针。
+    // TODO: packed音频格式怎么搞？
     if (!(*converted_input_samples = calloc(output_codec_context->channels,
                                             sizeof(**converted_input_samples)))) {
         fprintf(stderr, "Could not allocate converted input sample pointers\n");
@@ -452,9 +467,10 @@ static int init_converted_samples(uint8_t ***converted_input_samples,
 
     /* Allocate memory for the samples of all channels in one consecutive
      * block for convenience. */
+    // 为每个声道分配一个采样缓冲区，并将上一步得到的指针指向对应的缓冲区位置
     if ((error = av_samples_alloc(*converted_input_samples, NULL,
-                                  output_codec_context->channels,
-                                  frame_size,
+                                  output_codec_context->channels,   // 声道数
+                                  frame_size,   // 每声道包含的采样点数
                                   output_codec_context->sample_fmt, 0)) < 0) {
         fprintf(stderr,
                 "Could not allocate converted input samples (error '%s')\n",
@@ -475,6 +491,7 @@ static int init_converted_samples(uint8_t ***converted_input_samples,
  * @param[out] converted_data   Converted samples. The dimensions are channel
  *                              (for multi-channel audio), sample.
  * @param      frame_size       Number of samples to be converted
+ *                              输入音频帧中每个声道的采样点数
  * @param      resample_context Resample context for the conversion
  * @return Error code (0 if successful)
  */
@@ -512,6 +529,8 @@ static int add_samples_to_fifo(AVAudioFifo *fifo,
 
     /* Make the FIFO as large as it needs to be to hold both,
      * the old and the new samples. */
+    // 当前FIFO中可读数据大小是av_audio_fifo_size(fifo)
+    // 新的待写入数据大小是frame_size
     if ((error = av_audio_fifo_realloc(fifo, av_audio_fifo_size(fifo) + frame_size)) < 0) {
         fprintf(stderr, "Could not reallocate FIFO\n");
         return error;
@@ -557,9 +576,11 @@ static int read_decode_convert_and_store(AVAudioFifo *fifo,
     int ret = AVERROR_EXIT;
 
     /* Initialize temporary storage for one input frame. */
+    // 1. 初始化AVFrame
     if (init_input_frame(&input_frame))
         goto cleanup;
     /* Decode one frame worth of audio samples. */
+    // 2. 从输入文件中读取音频数据进行解码
     if (decode_audio_frame(input_frame, input_format_context,
                            input_codec_context, &data_present, finished))
         goto cleanup;
@@ -571,19 +592,23 @@ static int read_decode_convert_and_store(AVAudioFifo *fifo,
         goto cleanup;
     }
     /* If there is decoded data, convert and store it. */
-    if (data_present) {
+    if (data_present) {     // 成功解码得到一个音频帧
         /* Initialize the temporary storage for the converted input samples. */
+        // 3. 分配临时缓冲区用于存储重采样后的数据
         if (init_converted_samples(&converted_input_samples, output_codec_context,
                                    input_frame->nb_samples))
             goto cleanup;
 
         /* Convert the input samples to the desired output sample format.
          * This requires a temporary storage provided by converted_input_samples. */
+        // 4. 音频重采样，将重采样后的音频数据存入临时缓冲区
         if (convert_samples((const uint8_t**)input_frame->extended_data, converted_input_samples,
                             input_frame->nb_samples, resampler_context))
             goto cleanup;
 
         /* Add the converted input samples to the FIFO buffer for later processing. */
+        // 5. 将上一步重采样得到的音频帧写入FIFO
+        //    此处第二个参数是指向多个声道的多个指针，第三个参数是音频帧内单个声道的采样点数 
         if (add_samples_to_fifo(fifo, converted_input_samples,
                                 input_frame->nb_samples))
             goto cleanup;
@@ -633,6 +658,9 @@ static int init_output_frame(AVFrame **frame,
 
     /* Allocate the samples of the created frame. This call will make
      * sure that the audio frame can hold as many samples as specified. */
+    // 为AVFrame分配缓冲区，此函数会填充AVFrame.data和AVFrame.buf，若有需要，也会填充
+    // AVFrame.extended_data和AVFrame.extended_buf，对于planar格式音频，会为每个plane
+    // 分配一个缓冲区
     if ((error = av_frame_get_buffer(*frame, 0)) < 0) {
         fprintf(stderr, "Could not allocate output frame samples (error '%s')\n",
                 av_err2str(error));
@@ -666,6 +694,7 @@ static int encode_audio_frame(AVFrame *frame,
     init_packet(&output_packet);
 
     /* Set a timestamp based on the sample rate for the container. */
+    // 1. 基于采样率构造音频帧pts
     if (frame) {
         frame->pts = pts;
         pts += frame->nb_samples;
@@ -673,6 +702,7 @@ static int encode_audio_frame(AVFrame *frame,
 
     /* Send the audio frame stored in the temporary packet to the encoder.
      * The output audio stream encoder is used to do this. */
+    // 2. 向编码器写入一个音频frame
     error = avcodec_send_frame(output_codec_context, frame);
     /* The encoder signals that it has nothing more to encode. */
     if (error == AVERROR_EOF) {
@@ -685,6 +715,7 @@ static int encode_audio_frame(AVFrame *frame,
     }
 
     /* Receive one encoded frame from the encoder. */
+    // 3. 从编码器读取编码后的音频packet
     error = avcodec_receive_packet(output_codec_context, &output_packet);
     /* If the encoder asks for more data to be able to provide an
      * encoded frame, return indicating that no data is present. */
@@ -706,6 +737,7 @@ static int encode_audio_frame(AVFrame *frame,
 
     /* Write one audio frame from the temporary packet to the output file. */
     if (*data_present &&
+        // 4. 将音频packet写进输出文件
         (error = av_write_frame(output_format_context, &output_packet)) < 0) {
         fprintf(stderr, "Could not write frame (error '%s')\n",
                 av_err2str(error));
@@ -734,16 +766,20 @@ static int load_encode_and_write(AVAudioFifo *fifo,
     /* Use the maximum number of possible samples per frame.
      * If there is less than the maximum possible frame size in the FIFO
      * buffer use this number. Otherwise, use the maximum possible frame size. */
+    // 如果FIFO中可读数据多于编码器帧大小，则只读取编码器帧大小的数据出来
+    // 否则将FIFO中数据读完
     const int frame_size = FFMIN(av_audio_fifo_size(fifo),
                                  output_codec_context->frame_size);
     int data_written;
 
     /* Initialize temporary storage for one output frame. */
+    // 分配AVFrame及AVFrame数据缓冲区
     if (init_output_frame(&output_frame, output_codec_context, frame_size))
         return AVERROR_EXIT;
 
     /* Read as many samples from the FIFO buffer as required to fill the frame.
      * The samples are stored in the frame temporarily. */
+    // 从FIFO从读取数据填充到output_frame->data中
     if (av_audio_fifo_read(fifo, (void **)output_frame->data, frame_size) < frame_size) {
         fprintf(stderr, "Could not read data from FIFO\n");
         av_frame_free(&output_frame);
@@ -790,21 +826,26 @@ int main(int argc, char **argv)
     }
 
     /* Open the input file for reading. */
+    // 1. 打开输入
     if (open_input_file(argv[1], &input_format_context,
                         &input_codec_context))
         goto cleanup;
     /* Open the output file for writing. */
+    // 2. 打开输出
     if (open_output_file(argv[2], input_codec_context,
                          &output_format_context, &output_codec_context))
         goto cleanup;
     /* Initialize the resampler to be able to convert audio sample formats. */
+    // 3. 初始化音频重采样参数
     if (init_resampler(input_codec_context, output_codec_context,
                        &resample_context))
         goto cleanup;
     /* Initialize the FIFO buffer to store audio samples to be encoded. */
+    // 4. 创建存储待编码音频帧的FIFO
     if (init_fifo(&fifo, output_codec_context))
         goto cleanup;
     /* Write the header of the output file container. */
+    // 5. 写输出文件头
     if (write_output_file_header(output_format_context))
         goto cleanup;
 
@@ -815,14 +856,19 @@ int main(int argc, char **argv)
         const int output_frame_size = output_codec_context->frame_size;
         int finished                = 0;
 
+        // 音频重采样后输出帧写入FIFO
+        // 从FIFO中取音频帧写入编码器
+
         /* Make sure that there is one frame worth of samples in the FIFO
          * buffer so that the encoder can do its work.
          * Since the decoder's and the encoder's frame size may differ, we
          * need to FIFO buffer to store as many frames worth of input samples
          * that they make up at least one frame worth of output samples. */
+        // 6. FIFO中可读数据小于编码器帧尺寸，则继续往FIFO中写数据
         while (av_audio_fifo_size(fifo) < output_frame_size) {
             /* Decode one frame worth of audio samples, convert it to the
              * output sample format and put it into the FIFO buffer. */
+            // 从输入文件读取数据，解码，重采样，然后存入FIFO
             if (read_decode_convert_and_store(fifo, input_format_context,
                                               input_codec_context,
                                               output_codec_context,
@@ -831,17 +877,19 @@ int main(int argc, char **argv)
 
             /* If we are at the end of the input file, we continue
              * encoding the remaining audio samples to the output file. */
-            if (finished)
+            if (finished)   //若到文件尾则退出
                 break;
         }
 
         /* If we have enough samples for the encoder, we encode them.
          * At the end of the file, we pass the remaining samples to
          * the encoder. */
+        // 7. FIFO中可读数据大于编码器帧尺寸，则从FIFO中读走数据进行处理
         while (av_audio_fifo_size(fifo) >= output_frame_size ||
                (finished && av_audio_fifo_size(fifo) > 0))
             /* Take one frame worth of audio samples from the FIFO buffer,
              * encode it and write it to the output file. */
+            // 从FIFO中读取数据，编码，写入输出文件
             if (load_encode_and_write(fifo, output_format_context,
                                       output_codec_context))
                 goto cleanup;
@@ -853,6 +901,7 @@ int main(int argc, char **argv)
             /* Flush the encoder as it may have delayed frames. */
             do {
                 data_written = 0;
+                // 8. 冲洗编码器
                 if (encode_audio_frame(NULL, output_format_context,
                                        output_codec_context, &data_written))
                     goto cleanup;
@@ -862,6 +911,7 @@ int main(int argc, char **argv)
     }
 
     /* Write the trailer of the output file container. */
+    // 9. 写文件尾
     if (write_output_file_trailer(output_format_context))
         goto cleanup;
     ret = 0;
