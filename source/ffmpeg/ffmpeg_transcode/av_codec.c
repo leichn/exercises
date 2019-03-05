@@ -4,12 +4,11 @@
 //
 // retrun 1:                got a frame success
 //        AVERROR(EAGAIN):  need mored packet
-//        AVERROR_EOF:      end of file
+//        AVERROR_EOF:      end of file, decoder has been flushed
 //        <0:               error
-int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, AVFrame *frame)
+int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet, AVFrame *frame)
 {
     int ret = AVERROR(EAGAIN);
-    bool send = false;
 
     while (1)
     {
@@ -56,13 +55,15 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, AVFrame *frame)
         }
         else if (ret == AVERROR(EAGAIN))// 解码器需要喂数据
         {
-            if (send)   // 本函数中已向解码器喂过数据，因此需要从文件读取新数据
+            if (*new_packet)   // 本函数中已向解码器喂过数据，因此需要从文件读取新数据
             {
+                av_log(NULL, AV_LOG_INFO, "Decoder need more packet\n");
                 return ret;
             }
         }
         else                            // 错误
         {
+            av_log(NULL, AV_LOG_ERROR, "Decoder error %d\n", ret);
             return ret;
         }
 
@@ -79,8 +80,7 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, AVFrame *frame)
         //    pkt.pos变量可以标识当前packet在视频文件中的地址偏移
         //    发送第一个 flush packet 会返回成功，后续的 flush packet 会返回AVERROR_EOF
         ret = avcodec_send_packet(dec_ctx, packet);
-        av_packet_unref(packet);
-        send = true;
+        *new_packet = false;
         
         if (ret != 0)
         {
@@ -94,18 +94,6 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, AVFrame *frame)
 
 int av_encode_frame(AVCodecContext *enc_ctx, AVFrame *frame, AVPacket *packet)
 {
-    if (enc_ctx->codec_type == AVMEDIA_TYPE_AUDIO)
-    {
-        
-    }
-    /*
-      For audio:
-      If AV_CODEC_CAP_VARIABLE_FRAME_SIZE is set, then each frame
-      can have any number of samples.
-      If it is not set, frame->nb_samples must be equal to
-      avctx->frame_size for all frames except the last.
-      The final frame may be smaller than avctx->frame_size.
-    */
     int ret = avcodec_send_frame(enc_ctx, frame);
     if (ret == AVERROR_EOF)
     {

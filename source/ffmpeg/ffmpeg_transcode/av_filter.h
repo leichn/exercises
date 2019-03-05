@@ -7,18 +7,7 @@
 #include <libavutil/frame.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-
-typedef struct {
-    AVFormatContext* fmt_ctx;
-    AVCodecContext** codec_ctx;     // AVCodecContext* codec_ctx[];
-    AVAudioFifo**    audio_fifo;    // AVAudioFifo* audio_fifo[];
-}   inout_ctx_t;
-
-typedef struct {
-    AVCodecContext *dec_ctx;
-    AVCodecContext *enc_ctx;
-}   stream_codec_ctx_t;
-
+#include "open_file.h"
 
 typedef struct {
     AVFilterContext *bufsink_ctx;

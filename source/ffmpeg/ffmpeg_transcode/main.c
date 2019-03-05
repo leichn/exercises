@@ -1,32 +1,11 @@
-/*
- * Copyright (c) 2010 Nicolas George
- * Copyright (c) 2011 Stefano Sabatini
- * Copyright (c) 2014 Andrey Utkin
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
 /**
  * @file
  * API example for demuxing, decoding, filtering, encoding and muxing
  * @example transcoding.c
  */
+
+#include <stdbool.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -38,267 +17,17 @@
 #include "av_filter.h"
 #include "av_codec.h"
 
-static int open_input_file(const char *filename, inout_ctx_t *ictx)
+typedef struct 
 {
-    int ret;
-    unsigned int i;
-
-    AVFormatContext *ifmt_ctx = NULL;
-    // 1. 打开视频文件：读取文件头，将文件格式信息存储在ifmt_ctx中
-    if ((ret = avformat_open_input(&ifmt_ctx, filename, NULL, NULL)) < 0)
-    {
-        av_log(NULL, AV_LOG_ERROR, "Cannot open input file\n");
-        return ret;
-    }
-    ictx->fmt_ctx = ifmt_ctx;
-
-    // 2. 搜索流信息：读取一段视频文件数据，尝试解码，将取到的流信息填入ifmt_ctx.streams
-    //    ifmt_ctx.streams是一个指针数组，数组大小是ifmt_ctx.nb_streams
-    if ((ret = avformat_find_stream_info(ifmt_ctx, NULL)) < 0)
-    {
-        av_log(NULL, AV_LOG_ERROR, "Cannot find stream information\n");
-        return ret;
-    }
-
-    // 每路音频流/视频流一个AVCodecContext
-    AVCodecContext **pp_dec_ctx = av_mallocz_array(ifmt_ctx->nb_streams, sizeof(AVCodecContext *));
-    if (!pp_dec_ctx)
-    {
-        return AVERROR(ENOMEM);
-    }
-
-    // 3. 将输入文件中各流对应的AVCodecContext存入数组
-    for (i = 0; i < ifmt_ctx->nb_streams; i++)
-    {
-        // 3.1 获取解码器AVCodec
-        AVStream *stream = ifmt_ctx->streams[i];
-        AVCodec *dec = avcodec_find_decoder(stream->codecpar->codec_id);
-        AVCodecContext *codec_ctx;
-        if (!dec)
-        {
-            av_log(NULL, AV_LOG_ERROR, "Failed to find decoder for stream #%u\n", i);
-            return AVERROR_DECODER_NOT_FOUND;
-        }
-        // 3.2 AVCodecContext初始化：分配结构体，使用AVCodec初始化AVCodecContext相应成员为默认值
-        codec_ctx = avcodec_alloc_context3(dec);
-        if (!codec_ctx)
-        {
-            av_log(NULL, AV_LOG_ERROR, "Failed to allocate the decoder context for stream #%u\n", i);
-            return AVERROR(ENOMEM);
-        }
-        // 3.3 AVCodecContext初始化：使用codec参数codecpar初始化AVCodecContext相应成员
-        ret = avcodec_parameters_to_context(codec_ctx, stream->codecpar);
-        if (ret < 0)
-        {
-            av_log(NULL, AV_LOG_ERROR, "Failed to copy decoder parameters to input decoder context "
-                    "for stream #%u\n", i);
-            return ret;
-        }
-        /* Reencode video & audio and remux subtitles etc. */
-        // 音频流视频流需要重新编码，字幕流只需要重新封装
-        if (codec_ctx->codec_type == AVMEDIA_TYPE_VIDEO
-                || codec_ctx->codec_type == AVMEDIA_TYPE_AUDIO) {
-            if (codec_ctx->codec_type == AVMEDIA_TYPE_VIDEO)
-                codec_ctx->framerate = av_guess_frame_rate(ifmt_ctx, stream, NULL);
-            /* Open decoder */
-            // 3.4 AVCodecContext初始化：使用codec参数codecpar初始化AVCodecContext，初始化完成
-            ret = avcodec_open2(codec_ctx, dec, NULL);
-            if (ret < 0) {
-                av_log(NULL, AV_LOG_ERROR, "Failed to open decoder for stream #%u\n", i);
-                return ret;
-            }
-        }
-        pp_dec_ctx[i] = codec_ctx;
-    }
-
-    av_dump_format(ifmt_ctx, 0, filename, 0);
-
-    ictx->fmt_ctx = ifmt_ctx;
-    ictx->codec_ctx = pp_dec_ctx;
-
-    return 0;
-}
-
-static int open_output_file(const char *filename, const inout_ctx_t *ictx, inout_ctx_t *octx)
-{
-    AVStream *out_stream;
-    AVStream *in_stream;
-    AVCodecContext *dec_ctx, *enc_ctx;
-    AVCodec *encoder;
-    int ret;
-    unsigned int i;
-
-    // 1. 分配输出ctx
-    AVFormatContext *ofmt_ctx = NULL;
-    avformat_alloc_output_context2(&ofmt_ctx, NULL, NULL, filename);
-    if (!ofmt_ctx) {
-        av_log(NULL, AV_LOG_ERROR, "Could not create output context\n");
-        return AVERROR_UNKNOWN;
-    }
-
-    // 每路音频流/视频流一个AVCodecContext
-    AVCodecContext **pp_enc_ctx = av_mallocz_array(ofmt_ctx->nb_streams, sizeof(AVCodecContext *));
-    if (!pp_enc_ctx)
-    {
-        return AVERROR(ENOMEM);
-    }
-
-    AVAudioFifo **pp_audio_fifo = av_mallocz_array(ofmt_ctx->nb_streams, sizeof(AVAudioFifo *));
-    if (!pp_enc_ctx)
-    {
-        return AVERROR(ENOMEM);
-    }
-
-    AVFormatContext *ifmt_ctx = ictx->fmt_ctx;
-    for (i = 0; i < ifmt_ctx->nb_streams; i++)
-    {
-        // 2. 将一个新流(out_stream)添加到输出文件(ofmt_ctx)
-        AVStream *out_stream = NULL;
-        out_stream = avformat_new_stream(ofmt_ctx, NULL);
-        if (!out_stream)
-        {
-            av_log(NULL, AV_LOG_ERROR, "Failed allocating output stream\n");
-            return AVERROR_UNKNOWN;
-        }
-
-        AVStream *in_stream = ifmt_ctx->streams[i];
-        AVCodecContext *dec_ctx = ictx->codec_ctx[i];
-
-        // 3. 构建AVCodecContext
-        if (dec_ctx->codec_type == AVMEDIA_TYPE_VIDEO ||
-                dec_ctx->codec_type == AVMEDIA_TYPE_AUDIO)          // 音频流或视频流
-        {
-            // 3.1 查找编码器AVCodec，本例使用与解码器相同的编码器
-            AVCodec *encoder = avcodec_find_encoder(dec_ctx->codec_id);
-            if (!encoder)
-            {
-                av_log(NULL, AV_LOG_FATAL, "Necessary encoder not found\n");
-                return AVERROR_INVALIDDATA;
-            }
-            // 3.2 AVCodecContext初始化：分配结构体，使用AVCodec初始化AVCodecContext相应成员为默认值
-            AVCodecContext *enc_ctx = avcodec_alloc_context3(encoder);
-            if (!enc_ctx)
-            {
-                av_log(NULL, AV_LOG_FATAL, "Failed to allocate the encoder context\n");
-                return AVERROR(ENOMEM);
-            }
-
-            // 3.3 AVCodecContext初始化：配置图像/声音相关属性
-            /* In this example, we transcode to same properties (picture size,
-             * sample rate etc.). These properties can be changed for output
-             * streams easily using filters */
-            if (dec_ctx->codec_type == AVMEDIA_TYPE_VIDEO)
-            {
-                enc_ctx->height = dec_ctx->height;              // 图像高
-                enc_ctx->width = dec_ctx->width;                // 图像宽
-                enc_ctx->sample_aspect_ratio = dec_ctx->sample_aspect_ratio; // 采样宽高比：像素宽/像素高
-                /* take first format from list of supported formats */
-                if (encoder->pix_fmts)  // 编码器支持的像素格式列表
-                {
-                    enc_ctx->pix_fmt = encoder->pix_fmts[0];    // 编码器采用所支持的第一种像素格式
-                }
-                else
-                {
-                    enc_ctx->pix_fmt = dec_ctx->pix_fmt;        // 编码器采用解码器的像素格式
-                }
-                /* video time_base can be set to whatever is handy and supported by encoder */
-                enc_ctx->time_base = av_inv_q(dec_ctx->framerate);  // 时基：解码器帧率取倒数
-            }
-            else
-            {
-                enc_ctx->sample_rate = dec_ctx->sample_rate;    // 采样率
-                enc_ctx->channel_layout = dec_ctx->channel_layout; // 声道布局
-                enc_ctx->channels = av_get_channel_layout_nb_channels(enc_ctx->channel_layout); // 声道数量
-                /* take first format from list of supported formats */
-                enc_ctx->sample_fmt = encoder->sample_fmts[0];  // 编码器采用所支持的第一种采样格式
-                enc_ctx->time_base = (AVRational){1, enc_ctx->sample_rate}; // 时基：编码器采样率取倒数
-                // enc_ctx->codec->capabilities |= AV_CODEC_CAP_VARIABLE_FRAME_SIZE; // 只读标志
-
-                // 初始化一个FIFO用于存储待编码的音频帧，初始化FIFO大小的1个采样点
-                // av_audio_fifo_alloc()第二个参数是声道数，第三个参数是单个声道的采样点数
-                // 采样格式及声道数在初始化FIFO时已设置，各处涉及FIFO大小的地方都是用的单个声道的采样点数
-                pp_audio_fifo[i] = av_audio_fifo_alloc(enc_ctx->sample_fmt, enc_ctx->channels, 1)
-                if (pp_audio_fifo == NULL)
-                {
-                    av_log(NULL, AV_LOG_ERROR, "Could not allocate FIFO\n");
-                    return AVERROR(ENOMEM);
-                }
-
-            }
-
-            // TODO: 这个标志还不懂，以后研究
-            if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
-            {
-                enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-            }
-
-            // 3.4 AVCodecContext初始化：使用AVCodec初始化AVCodecContext，初始化完成
-            /* Third parameter can be used to pass settings to encoder */
-            ret = avcodec_open2(enc_ctx, encoder, NULL);
-            if (ret < 0)
-            {
-                av_log(NULL, AV_LOG_ERROR, "Cannot open video encoder for stream #%u\n", i);
-                return ret;
-            }
-            // 3.5 设置输出流codecpar
-            ret = avcodec_parameters_from_context(out_stream->codecpar, enc_ctx);
-            if (ret < 0)
-            {
-                av_log(NULL, AV_LOG_ERROR, "Failed to copy encoder parameters to output stream #%u\n", i);
-                return ret;
-            }
-
-            // 3.6 设置输出流time_base
-            out_stream->time_base = enc_ctx->time_base;
-            // 3.7 保存输出流contex
-            pp_enc_ctx[i] = enc_ctx;
-        } 
-        else if (dec_ctx->codec_type == AVMEDIA_TYPE_UNKNOWN)
-        {
-            av_log(NULL, AV_LOG_FATAL, "Elementary stream #%d is of unknown type, cannot proceed\n", i);
-            return AVERROR_INVALIDDATA;
-        }
-        else
-        {    // 字幕流等
-            /* if this stream must be remuxed */
-            // 3. 将当前输入流中的参数拷贝到输出流中
-            ret = avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
-            if (ret < 0)
-            {
-                av_log(NULL, AV_LOG_ERROR, "Copying parameters for stream #%u failed\n", i);
-                return ret;
-            }
-            out_stream->time_base = in_stream->time_base;
-        }
-
-    }
-    av_dump_format(ofmt_ctx, 0, filename, 1);
-
-    if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) // TODO: 研究AVFMT_NOFILE标志
-    { 
-        // 4. 创建并初始化一个AVIOContext，用以访问URL(out_filename)指定的资源
-        ret = avio_open(&ofmt_ctx->pb, filename, AVIO_FLAG_WRITE);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Could not open output file '%s'", filename);
-            return ret;
-        }
-    }
-
-    // 5. 写输出文件头
-    /* init muxer, write output file header */
-    ret = avformat_write_header(ofmt_ctx, NULL);
-    if (ret < 0)
-    {
-        av_log(NULL, AV_LOG_ERROR, "Error occurred when opening output file\n");
-        return ret;
-    }
-
-    octx->fmt_ctx = ofmt_ctx;
-    octx->codec_ctx = pp_enc_ctx;
-    octx->audio_fifo = pp_audio_fifo;
-
-    return 0;
-}
+    AVFormatContext* i_fmt_ctx;
+    AVCodecContext* i_codec_ctx;
+    AVFormatContext* o_fmt_ctx;
+    AVCodecContext* o_codec_ctx;
+    filter_ctx_t* flt_ctx;
+    AVAudioFifo* aud_fifo;
+    AVStream* stream;
+    int stream_idx;
+}   stream_ctx_t;
 
 // 为每个音频流/视频流使用空滤镜，滤镜图中将buffer滤镜和buffersink滤镜直接相连
 // 目的是：通过视频buffersink滤镜将视频流输出像素格式转换为编码器采用的像素格式
@@ -391,11 +120,312 @@ static int flush_encoder(unsigned int stream_index)
 }
 #endif
 
+/**
+ * Initialize one input frame for writing to the output file.
+ * The frame will be exactly frame_size samples large.
+ * @param[out] frame                Frame to be initialized
+ * @param      output_codec_context Codec context of the output file
+ * @param      frame_size           Size of the frame
+ * @return Error code (0 if successful)
+ */
+static int init_audio_output_frame(AVFrame **frame,
+                                   AVCodecContext *occtx,
+                                   int frame_size)
+{
+    int error;
+
+    /* Create a new frame to store the audio samples. */
+    if (!(*frame = av_frame_alloc()))
+    {
+        fprintf(stderr, "Could not allocate output frame\n");
+        return AVERROR_EXIT;
+    }
+
+    /* Set the frame's parameters, especially its size and format.
+     * av_frame_get_buffer needs this to allocate memory for the
+     * audio samples of the frame.
+     * Default channel layouts based on the number of channels
+     * are assumed for simplicity. */
+    (*frame)->nb_samples     = frame_size;
+    (*frame)->channel_layout = occtx->channel_layout;
+    (*frame)->format         = occtx->sample_fmt;
+    (*frame)->sample_rate    = occtx->sample_rate;
+
+    /* Allocate the samples of the created frame. This call will make
+     * sure that the audio frame can hold as many samples as specified. */
+    // 为AVFrame分配缓冲区，此函数会填充AVFrame.data和AVFrame.buf，若有需要，也会填充
+    // AVFrame.extended_data和AVFrame.extended_buf，对于planar格式音频，会为每个plane
+    // 分配一个缓冲区
+    if ((error = av_frame_get_buffer(*frame, 0)) < 0)
+    {
+        fprintf(stderr, "Could not allocate output frame samples (error '%s')\n",
+                av_err2str(error));
+        av_frame_free(frame);
+        return error;
+    }
+
+    return 0;
+}
+
+// FIFO中可读数据小于编码器帧尺寸，则继续往FIFO中写数据
+static int write_frame_to_audio_fifo(AVAudioFifo *fifo,
+                                     uint8_t **new_data,
+                                     int new_size)
+{
+    int ret = av_audio_fifo_realloc(fifo, av_audio_fifo_size(fifo) + new_size);
+    if (ret < 0)
+    {
+        fprintf(stderr, "Could not reallocate FIFO\n");
+        return ret;
+    }
+    
+    /* Store the new samples in the FIFO buffer. */
+    ret = av_audio_fifo_write(fifo, (void **)new_data, new_size);
+    if (ret < new_size)
+    {
+        fprintf(stderr, "Could not write data to FIFO\n");
+        return AVERROR_EXIT;
+    }
+
+    return 0;
+}
+
+static int read_frame_from_audio_fifo(AVAudioFifo *fifo,
+                                      AVCodecContext *occtx,
+                                      AVFrame **frame)
+{
+    AVFrame *output_frame;
+    // 如果FIFO中可读数据多于编码器帧大小，则只读取编码器帧大小的数据出来
+    // 否则将FIFO中数据读完。frame_size是帧中单个声道的采样点数
+    const int frame_size = FFMIN(av_audio_fifo_size(fifo), occtx->frame_size);
+
+    /* Initialize temporary storage for one output frame. */
+    // 分配AVFrame及AVFrame数据缓冲区
+    if (init_audio_output_frame(&output_frame, occtx, frame_size))
+    {
+        return AVERROR_EXIT;
+    }
+
+    // 从FIFO从读取数据填充到output_frame->data中
+    if (av_audio_fifo_read(fifo, (void **)output_frame->data, frame_size) < frame_size)
+    {
+        fprintf(stderr, "Could not read data from FIFO\n");
+        av_frame_free(&output_frame);
+        return AVERROR_EXIT;
+    }
+
+    *frame = output_frame;
+
+    return 0;
+}
+
+static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket, bool *finished)
+{
+    AVFrame *frame_dec = av_frame_alloc();
+    AVFrame *frame_flt = av_frame_alloc();
+    if (!frame_dec || !frame_flt)
+    {
+        perror("Could not allocate frame");
+        exit(1);
+    }
+    AVFrame *frame_enc = NULL;
+
+    AVPacket opacket;
+    av_init_packet(&opacket);
+    /* Set the packet data and size so that it is recognized as being empty. */
+    opacket.data = NULL;
+    opacket.size = 0;
+
+    int enc_frame_size = sctx->o_codec_ctx->frame_size;
+    AVAudioFifo* p_fifo = sctx->aud_fifo;
+    int ret = 0;
+    bool dec_finished = false;
+    bool enc_finished = false;
+    bool new_packet = true;
+    
+    while (1)   // 处理一个packet，一个音频packet可能包含多个音频frame，循环每次处理一个frame
+    {
+        dec_finished = false;
+        enc_finished = false;
+
+        ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &new_packet, frame_dec);
+        if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
+        {
+            goto end;
+        }
+        else if (ret == AVERROR_EOF)    // 解码器已冲洗
+        {
+            dec_finished = true;
+            break;
+        }
+        else if (ret < 0)
+        {
+            goto end;
+        }
+
+        ret = filtering_frame(sctx->flt_ctx, frame_dec, frame_flt);
+        if (ret < 0)
+        {
+            goto end;
+        }
+
+        uint8_t** new_data = frame_flt->extended_data;  // 本帧中多个声道音频数据
+        int new_size = frame_flt->nb_samples;           // 本帧中单个声道的采样点数
+        
+        // FIFO中可读数据小于编码器帧尺寸，则继续往FIFO中写数据
+        ret = write_frame_to_audio_fifo(p_fifo, new_data, new_size);
+        if (ret < 0)
+        {
+            goto end;
+        }
+
+        // FIFO中可读数据大于编码器帧尺寸，则从FIFO中读走数据进行处理
+        while ((av_audio_fifo_size(p_fifo) >= enc_frame_size) ||
+               (dec_finished && av_audio_fifo_size(p_fifo) > 0))
+        {
+            // 从FIFO中读取数据，编码，写入输出文件
+            ret = read_frame_from_audio_fifo(p_fifo, sctx->o_codec_ctx, &frame_enc);
+            if (ret != 0)
+            {
+                goto end;
+            }
+
+            ret = av_encode_frame(sctx->o_codec_ctx, frame_enc, &opacket);
+            if (ret == AVERROR(EAGAIN))     // 需要获取新的frame喂给编码器
+            {
+                continue;
+            }
+            else if (ret == AVERROR_EOF)
+            {
+                enc_finished = true;
+            }
+
+            // 2. AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
+            //    所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
+            opacket.stream_index = sctx->stream_idx;
+            av_packet_rescale_ts(&opacket,
+                                 sctx->o_codec_ctx->time_base,
+                                 sctx->stream->time_base);
+            
+            av_log(NULL, AV_LOG_DEBUG, "Muxing frame\n");
+
+            // 3. 将编码后的packet写入输出媒体文件
+            ret = av_interleaved_write_frame(sctx->o_fmt_ctx, &opacket);
+            if (ret < 0)
+            {
+                goto end;
+            }
+
+            if (enc_finished)
+            {
+                break;
+            }
+        }
+
+        if (dec_finished || enc_finished)
+        {
+            *finished = true;
+            break;
+        }
+    }
+
+    ret = 0;
+    
+end:
+    av_packet_unref(&opacket);
+    av_packet_unref(ipacket);
+    av_frame_free(&frame_enc);
+    av_frame_free(&frame_flt);
+    av_frame_free(&frame_dec);
+    
+    return 0;
+}
+
+static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket, bool *finished)
+{
+    AVFrame *frame_dec = av_frame_alloc();
+    AVFrame *frame_flt = av_frame_alloc();
+    if (!frame_dec || !frame_flt)
+    {
+        perror("Could not allocate frame");
+        exit(1);
+    }
+    AVFrame *frame_enc = NULL;
+
+    AVPacket opacket;
+    av_init_packet(&opacket);
+    /* Set the packet data and size so that it is recognized as being empty. */
+    opacket.data = NULL;
+    opacket.size = 0;
+
+    bool dec_finished = false;
+    bool enc_finished = false;
+
+    int ret = av_decode_frame(sctx->i_codec_ctx, ipacket, frame_dec);
+    if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
+    {
+        av_log(NULL, AV_LOG_INFO, "decode frame need more packet\n");
+        return ret;
+    }
+    else if (ret == AVERROR_EOF)    // 解码器已冲洗
+    {
+        av_log(NULL, AV_LOG_INFO, "decode frame EOF\n");
+        dec_finished = true;
+    }
+    else if (ret < 0)
+    {
+        av_log(NULL, AV_LOG_ERROR, "decode frame error %d\n", ret);
+        return ret;
+    }
+
+    ret = filtering_frame(sctx->flt_ctx, frame_dec, frame_flt);
+    if (ret < 0)
+    {
+        av_log(NULL, AV_LOG_INFO, "filtering frame error\n", ret);
+        return ret;
+    }
+
+    ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
+    if (ret == AVERROR_EOF)
+    {
+        av_log(NULL, AV_LOG_INFO, "encode frame EOF\n");
+        enc_finished = true;
+    }
+    else if (ret < 0)
+    {
+        av_log(NULL, AV_LOG_ERROR, "encode frame error %d\n", ret);
+        return ret;
+    }
+
+    // 2. AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
+    //    所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
+    opacket.stream_index = sctx->stream_idx;
+    av_packet_rescale_ts(&opacket,
+                            sctx->o_codec_ctx->time_base,
+                            sctx->stream->time_base);
+
+    // 3. 将编码后的packet写入输出媒体文件
+    ret = av_interleaved_write_frame(sctx->o_fmt_ctx, &opacket);
+    av_packet_unref(&opacket);
+    if (ret < 0)
+    {
+        av_log(NULL, AV_LOG_ERROR, "write frame error %d\n", ret);
+        return ret;
+    }
+
+    if (dec_finished || enc_finished)
+    {
+        *finished = true;
+    }
+
+    return 0;
+}
+
+
 int main(int argc, char **argv)
 {
     int ret;
     AVPacket ipacket = { .data = NULL, .size = 0 };
-    AVPacket opacket = { .data = NULL, .size = 0 };
 
     enum AVMediaType type;
     unsigned int stream_index;
@@ -419,7 +449,8 @@ int main(int argc, char **argv)
         goto end;
     }
     inout_ctx_t octx;
-    ret = open_output_file(argv[2], &ictx, &octx);
+    AVAudioFifo** oafifo = NULL;    // AVAudioFifo* oafifo[]
+    ret = open_output_file(argv[2], &ictx, &octx, &oafifo);
     if (ret < 0)
     {
         goto end;
@@ -428,19 +459,28 @@ int main(int argc, char **argv)
     ret = init_filters(&ictx, &octx, &fctxs);
     if (ret < 0)
     {
-        goto end;
+        return ret;
     }
 
-    AVFrame *frame = av_frame_alloc();
+    AVFrame *frame_dec = av_frame_alloc();
     AVFrame *frame_flt = av_frame_alloc();
-    if (!frame || !frame_flt)
+    if (!frame_dec || !frame_flt)
     {
         perror("Could not allocate frame");
         exit(1);
     }
+    AVFrame *frame_enc = NULL;
 
+    bool read_finished = false;
+    bool aud_finished = false;
+    bool vid_finished = false;
+    stream_ctx_t stream;
     while (1)
     {
+        //if (ipacket.data != NULL)
+        {
+            av_packet_unref(&ipacket);
+        }
         // 2. 从输入文件读取packet
         ret = av_read_frame(ictx.fmt_ctx, &ipacket);
         if (ret < 0)
@@ -449,6 +489,7 @@ int main(int argc, char **argv)
             {
                 // 输入文件已读完，发送NULL packet以冲洗(flush)解码器，否则解码器中缓存的帧取不出来
                 av_log(NULL, AV_LOG_INFO, "av_read_frame() end of file\n");
+                read_finished = true;
                 break;
             }
             else
@@ -461,75 +502,44 @@ int main(int argc, char **argv)
         enum AVMediaType codec_type = ictx.fmt_ctx->streams[stream_index]->codecpar->codec_type;
         av_log(NULL, AV_LOG_DEBUG, "Demuxer gave frame of stream_index %u\n", stream_index);
 
-        if ((codec_type == AVMEDIA_TYPE_VIDEO) || (codec_type == AVMEDIA_TYPE_AUDIO))
+        if (codec_type == AVMEDIA_TYPE_AUDIO)
         {
-            while (1)   // 处理一个packet
+            stream.i_fmt_ctx = ictx.fmt_ctx;
+            stream.i_codec_ctx = ictx.codec_ctx[stream_index];
+            stream.stream = ictx.fmt_ctx->streams[stream_index];
+            stream.stream_idx = stream_index;
+            stream.flt_ctx = &fctxs[stream_index];
+            stream.aud_fifo = oafifo[stream_index];
+            stream.o_fmt_ctx = octx.fmt_ctx;
+            stream.o_codec_ctx = octx.codec_ctx[stream_index];
+            ret = transcode_audio(&stream, &ipacket, &aud_finished);
+            if (ret < 0)
             {
-                ret = av_decode_frame(ictx.codec_ctx[stream_index], &ipacket, frame);
-                if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
-                {
-                    break;
-                }
-                else if (ret == AVERROR_EOF)
-                {
-                    break;
-                }
-
-                ret = filtering_frame(&fctxs[stream_index], frame, frame_flt);
-                if (ret < 0)
-                {
-                    goto end;
-                }
-
-                // 音频帧特殊处理
-                if (codec_type == AVMEDIA_TYPE_AUDIO)
-                {
-                    // FIFO中可读数据小于编码器帧尺寸，则继续往FIFO中写数据
-                    while (av_audio_fifo_size(fifo) < output_frame_size) {
-                        /* Decode one frame worth of audio samples, convert it to the
-                         * output sample format and put it into the FIFO buffer. */
-                        // 从输入文件读取数据，解码，重采样，然后存入FIFO
-                        if (read_decode_convert_and_store(fifo, input_format_context,
-                                                          input_codec_context,
-                                                          output_codec_context,
-                                                          resample_context, &finished))
-                            goto cleanup;
-
-                        /* If we are at the end of the input file, we continue
-                         * encoding the remaining audio samples to the output file. */
-                        if (finished)   //若到文件尾则退出
-                            break;
-                    }
-                }
-
-                ret = av_encode_frame(octx.codec_ctx[stream_index], frame_flt, &opacket);
-                if (ret == AVERROR(EAGAIN))     // 需要获取新的frame喂给编码器
-                {
-                    continue;
-                }
-                else if (ret == AVERROR_EOF)
-                {
-                    break;
-                }
-
-                // 2. AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
-                //    所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
-                /* prepare packet for muxing */
-                opacket.stream_index = stream_index;
-                av_packet_rescale_ts(&opacket,
-                                     octx.codec_ctx[stream_index]->time_base,
-                                     octx.fmt_ctx->streams[stream_index]->time_base);
-                
-                av_log(NULL, AV_LOG_DEBUG, "Muxing frame\n");
-                /* mux encoded frame */
-                // 3. 将编码后的packet写入输出媒体文件
-                ret = av_interleaved_write_frame(octx.fmt_ctx, &opacket);
-
+                goto end;
+            }
+        }
+        else if (codec_type == AVMEDIA_TYPE_VIDEO)
+        {
+            stream.i_fmt_ctx = ictx.fmt_ctx;
+            stream.i_codec_ctx = ictx.codec_ctx[stream_index];
+            stream.stream = ictx.fmt_ctx->streams[stream_index];
+            stream.stream_idx = stream_index;
+            stream.flt_ctx = &fctxs[stream_index];
+            stream.o_fmt_ctx = octx.fmt_ctx;
+            stream.o_codec_ctx = octx.codec_ctx[stream_index];
+            ret = transcode_video(&stream, &ipacket, &vid_finished);
+            if (ret == AVERROR(EAGAIN))
+            {
+                av_log(NULL, AV_LOG_INFO, "need read more video packet\n");
+                continue;
+            }
+            else if (ret < 0)
+            {
+                goto end;
             }
         }
         else
         {
-            /* remux this frame without reencoding */
             // AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
             // 所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
             av_packet_rescale_ts(&ipacket,
@@ -541,11 +551,7 @@ int main(int argc, char **argv)
             {
                 goto end;
             }
-
         }
-
-        av_packet_unref(&ipacket);
-        av_packet_unref(&opacket);
     }
 
 #if 0
@@ -578,9 +584,8 @@ end:
     }
 
     av_packet_unref(&ipacket);
-    av_packet_unref(&opacket);
     
-    av_frame_free(&frame);
+    // av_frame_free(&frame);
     for (i = 0; i < ictx.fmt_ctx->nb_streams; i++)
     {
         avcodec_free_context(&ictx.codec_ctx[i]);
