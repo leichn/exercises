@@ -6,14 +6,9 @@
  */
 
 #include <stdbool.h>
-
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
-#include <libavfilter/buffersink.h>
-#include <libavfilter/buffersrc.h>
-#include <libavutil/opt.h>
-#include <libavutil/pixdesc.h>
-
+#include <libavutil/time.h>
 #include "av_filter.h"
 #include "av_codec.h"
 
@@ -219,7 +214,7 @@ static int read_frame_from_audio_fifo(AVAudioFifo *fifo,
     return 0;
 }
 
-static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket, bool *finished)
+static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
 {
     AVFrame *frame_dec = av_frame_alloc();
     AVFrame *frame_flt = av_frame_alloc();
@@ -241,6 +236,7 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket, bool *fi
     int ret = 0;
     bool dec_finished = false;
     bool enc_finished = false;
+    bool flt_finished = false;
     bool new_packet = true;
     
     while (1)   // 处理一个packet，一个音频packet可能包含多个音频frame，循环每次处理一个frame
@@ -251,53 +247,81 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket, bool *fi
         ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &new_packet, frame_dec);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
         {
+            av_log(NULL, AV_LOG_INFO, "decode aframe need more packet\n");
             goto end;
         }
         else if (ret == AVERROR_EOF)    // 解码器已冲洗
         {
             dec_finished = true;
-            break;
+            av_log(NULL, AV_LOG_INFO, "decode aframe EOF\n");
+            frame_dec = NULL;
         }
         else if (ret < 0)
         {
+            av_log(NULL, AV_LOG_INFO, "decode aframe error %d\n", ret);
             goto end;
         }
 
         ret = filtering_frame(sctx->flt_ctx, frame_dec, frame_flt);
-        if (ret < 0)
+        if (ret == AVERROR_EOF)         // 滤镜已冲洗
         {
+            flt_finished = true;
+            av_log(NULL, AV_LOG_INFO, "filtering aframe EOF\n");
+            frame_flt = NULL;
+        }
+        else if (ret < 0)
+        {
+            av_log(NULL, AV_LOG_INFO, "filtering aframe error %d\n", ret);
             goto end;
         }
 
-        uint8_t** new_data = frame_flt->extended_data;  // 本帧中多个声道音频数据
-        int new_size = frame_flt->nb_samples;           // 本帧中单个声道的采样点数
-        
-        // FIFO中可读数据小于编码器帧尺寸，则继续往FIFO中写数据
-        ret = write_frame_to_audio_fifo(p_fifo, new_data, new_size);
-        if (ret < 0)
+        if (!dec_finished)
         {
-            goto end;
+            uint8_t** new_data = frame_flt->extended_data;  // 本帧中多个声道音频数据
+            int new_size = frame_flt->nb_samples;           // 本帧中单个声道的采样点数
+            
+            // FIFO中可读数据小于编码器帧尺寸，则继续往FIFO中写数据
+            ret = write_frame_to_audio_fifo(p_fifo, new_data, new_size);
+            if (ret < 0)
+            {
+                av_log(NULL, AV_LOG_INFO, "write aframe to fifo error\n");
+                goto end;
+            }
         }
 
         // FIFO中可读数据大于编码器帧尺寸，则从FIFO中读走数据进行处理
-        while ((av_audio_fifo_size(p_fifo) >= enc_frame_size) ||
-               (dec_finished && av_audio_fifo_size(p_fifo) > 0))
+        while ((av_audio_fifo_size(p_fifo) >= enc_frame_size) || dec_finished)
         {
-            // 从FIFO中读取数据，编码，写入输出文件
-            ret = read_frame_from_audio_fifo(p_fifo, sctx->o_codec_ctx, &frame_enc);
-            if (ret != 0)
+            bool flushing = dec_finished && (av_audio_fifo_size(p_fifo) == 0);  // 已取空，刷洗编码器
+            
+            if (frame_enc != NULL)
             {
-                goto end;
+                av_frame_free(&frame_enc);
             }
 
+            if (!flushing)  // 已取空，刷洗编码器
+            {
+                // 从FIFO中读取数据，编码，写入输出文件
+                ret = read_frame_from_audio_fifo(p_fifo, sctx->o_codec_ctx, &frame_enc);
+                if (ret != 0)
+                {
+                    av_log(NULL, AV_LOG_INFO, "read aframe from fifo error\n");
+                    goto end;
+                }
+            }
+
+flush_encoder:
             ret = av_encode_frame(sctx->o_codec_ctx, frame_enc, &opacket);
             if (ret == AVERROR(EAGAIN))     // 需要获取新的frame喂给编码器
             {
+                av_log(NULL, AV_LOG_INFO, "encode aframe need more packet\n");
                 continue;
             }
             else if (ret == AVERROR_EOF)
             {
+                av_log(NULL, AV_LOG_INFO, "encode aframe EOF\n");
                 enc_finished = true;
+                goto end;
             }
 
             // 2. AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
@@ -313,35 +337,35 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket, bool *fi
             ret = av_interleaved_write_frame(sctx->o_fmt_ctx, &opacket);
             if (ret < 0)
             {
+                av_log(NULL, AV_LOG_INFO, "write aframe error %d\n", ret);
                 goto end;
             }
 
-            if (enc_finished)
+            if (flushing)
             {
-                break;
+                goto flush_encoder;
             }
+            
         }
 
-        if (dec_finished || enc_finished)
+        if (enc_finished)
         {
-            *finished = true;
             break;
         }
     }
 
-    ret = 0;
+    ret = 1;
     
 end:
     av_packet_unref(&opacket);
-    av_packet_unref(ipacket);
     av_frame_free(&frame_enc);
     av_frame_free(&frame_flt);
     av_frame_free(&frame_dec);
     
-    return 0;
+    return ret;
 }
 
-static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket, bool *finished)
+static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
 {
     AVFrame *frame_dec = av_frame_alloc();
     AVFrame *frame_flt = av_frame_alloc();
@@ -360,41 +384,57 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket, bool *fi
 
     bool dec_finished = false;
     bool enc_finished = false;
+    bool flt_finished = false;
+    bool unused_flag;
 
-    int ret = av_decode_frame(sctx->i_codec_ctx, ipacket, frame_dec);
+    int ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &unused_flag, frame_dec);
     if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
     {
-        av_log(NULL, AV_LOG_INFO, "decode frame need more packet\n");
-        return ret;
+        av_log(NULL, AV_LOG_INFO, "decode vframe need more packet\n");
+        goto end;
     }
     else if (ret == AVERROR_EOF)    // 解码器已冲洗
     {
-        av_log(NULL, AV_LOG_INFO, "decode frame EOF\n");
+        av_log(NULL, AV_LOG_INFO, "decode vframe EOF\n");
         dec_finished = true;
+        frame_dec = NULL;           // flush filter
     }
     else if (ret < 0)
     {
-        av_log(NULL, AV_LOG_ERROR, "decode frame error %d\n", ret);
-        return ret;
+        av_log(NULL, AV_LOG_ERROR, "decode vframe error %d\n", ret);
+        goto end;
     }
 
     ret = filtering_frame(sctx->flt_ctx, frame_dec, frame_flt);
-    if (ret < 0)
-    {
-        av_log(NULL, AV_LOG_INFO, "filtering frame error\n", ret);
-        return ret;
-    }
-
-    ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
     if (ret == AVERROR_EOF)
     {
-        av_log(NULL, AV_LOG_INFO, "encode frame EOF\n");
-        enc_finished = true;
+        av_log(NULL, AV_LOG_INFO, "filtering vframe EOF\n");
+        flt_finished = true;
+        frame_flt = NULL;
     }
     else if (ret < 0)
     {
-        av_log(NULL, AV_LOG_ERROR, "encode frame error %d\n", ret);
-        return ret;
+        av_log(NULL, AV_LOG_INFO, "filtering vframe error %d\n", ret);
+        goto end;
+    }
+
+flush_encoder:
+    ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
+    if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给编码器
+    {
+        av_log(NULL, AV_LOG_INFO, "encode vframe need more packet\n");
+        goto end;
+    }
+    else if (ret == AVERROR_EOF)
+    {
+        av_log(NULL, AV_LOG_INFO, "encode vframe EOF\n");
+        enc_finished = true;
+        goto end;
+    }
+    else if (ret < 0)
+    {
+        av_log(NULL, AV_LOG_ERROR, "encode vframe error %d\n", ret);
+        goto end;
     }
 
     // 2. AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
@@ -409,18 +449,103 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket, bool *fi
     av_packet_unref(&opacket);
     if (ret < 0)
     {
-        av_log(NULL, AV_LOG_ERROR, "write frame error %d\n", ret);
-        return ret;
+        av_log(NULL, AV_LOG_ERROR, "write vframe error %d\n", ret);
+        goto end;
     }
 
-    if (dec_finished || enc_finished)
+    if (flt_finished)
     {
-        *finished = true;
+        goto flush_encoder;
+    }
+    
+end:
+    av_packet_unref(&opacket);
+    av_frame_free(&frame_enc);
+    av_frame_free(&frame_flt);
+    av_frame_free(&frame_dec);
+
+    return ret;
+}
+
+static int flush_audio(const stream_ctx_t *sctx)
+{
+    AVPacket flush_packet;
+    av_init_packet(&flush_packet);
+    flush_packet.data = NULL;
+    flush_packet.size = 0;
+
+    int ret;
+
+    av_log(NULL, AV_LOG_INFO, "flushing audio\n");
+    
+    while (1)
+    {
+        ret = transcode_audio(sctx, &flush_packet);
+        if (ret == AVERROR(EAGAIN))
+        {
+            av_usleep(10000);
+            av_log(NULL, AV_LOG_INFO, "flushing audio one more\n");
+            continue;
+        }
+        else if (ret == AVERROR_EOF)
+        {
+            av_log(NULL, AV_LOG_INFO, "flushing audio finished\n");
+            return 0;
+        }
+        else if (ret < 0)
+        {
+            av_log(NULL, AV_LOG_INFO, "flushing audio error %d\n", ret);
+            return ret;
+        }
+        else 
+        {
+            av_usleep(10000);
+            av_log(NULL, AV_LOG_INFO, "flushing audio... %d\n", ret);
+        }
     }
 
     return 0;
 }
 
+static int flush_video(const stream_ctx_t *sctx)
+{
+    AVPacket flush_packet;
+    av_init_packet(&flush_packet);
+    flush_packet.data = NULL;
+    flush_packet.size = 0;
+
+    int ret;
+    
+    av_log(NULL, AV_LOG_INFO, "flushing video\n");
+    
+    while (1)
+    {
+        ret = transcode_video(sctx, &flush_packet);
+        if (ret == AVERROR(EAGAIN))
+        {
+            av_usleep(10000);
+            av_log(NULL, AV_LOG_INFO, "flushing video one more\n");
+            continue;
+        }
+        else if (ret == AVERROR_EOF)
+        {
+            av_log(NULL, AV_LOG_INFO, "flushing video finished\n");
+            return 0;
+        }
+        else if (ret < 0)
+        {
+            av_log(NULL, AV_LOG_INFO, "flushing video error %d\n", ret);
+            return ret;
+        }
+        else 
+        {
+            av_usleep(10000);
+            av_log(NULL, AV_LOG_INFO, "flushing video... %d\n", ret);
+        }
+    }
+
+    return 0;
+}
 
 int main(int argc, char **argv)
 {
@@ -472,12 +597,12 @@ int main(int argc, char **argv)
     AVFrame *frame_enc = NULL;
 
     bool read_finished = false;
-    bool aud_finished = false;
-    bool vid_finished = false;
     stream_ctx_t stream;
+    enum AVMediaType codec_type;
+    
     while (1)
     {
-        //if (ipacket.data != NULL)
+        if (ipacket.data == NULL)
         {
             av_packet_unref(&ipacket);
         }
@@ -499,7 +624,7 @@ int main(int argc, char **argv)
         }
 
         int stream_index = ipacket.stream_index;
-        enum AVMediaType codec_type = ictx.fmt_ctx->streams[stream_index]->codecpar->codec_type;
+        codec_type = ictx.fmt_ctx->streams[stream_index]->codecpar->codec_type;
         av_log(NULL, AV_LOG_DEBUG, "Demuxer gave frame of stream_index %u\n", stream_index);
 
         if (codec_type == AVMEDIA_TYPE_AUDIO)
@@ -512,8 +637,13 @@ int main(int argc, char **argv)
             stream.aud_fifo = oafifo[stream_index];
             stream.o_fmt_ctx = octx.fmt_ctx;
             stream.o_codec_ctx = octx.codec_ctx[stream_index];
-            ret = transcode_audio(&stream, &ipacket, &aud_finished);
-            if (ret < 0)
+            ret = transcode_audio(&stream, &ipacket);
+            if (ret == AVERROR(EAGAIN))
+            {
+                av_log(NULL, AV_LOG_INFO, "need read more audio packet\n");
+                continue;
+            }
+            else if (ret < 0)
             {
                 goto end;
             }
@@ -527,7 +657,7 @@ int main(int argc, char **argv)
             stream.flt_ctx = &fctxs[stream_index];
             stream.o_fmt_ctx = octx.fmt_ctx;
             stream.o_codec_ctx = octx.codec_ctx[stream_index];
-            ret = transcode_video(&stream, &ipacket, &vid_finished);
+            ret = transcode_video(&stream, &ipacket);
             if (ret == AVERROR(EAGAIN))
             {
                 av_log(NULL, AV_LOG_INFO, "need read more video packet\n");
@@ -554,27 +684,37 @@ int main(int argc, char **argv)
         }
     }
 
-#if 0
     /* flush filters and encoders */
-    for (i = 0; i < ifmt_ctx->nb_streams; i++) {
-        /* flush filter */
-        if (!filter_ctx[i].filter_graph)
-            continue;
-        ret = filter_encode_write_frame(NULL, i);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Flushing filter failed\n");
-            goto end;
+    for (i = 0; i < ictx.fmt_ctx->nb_streams; i++)
+    {
+        enum AVMediaType codec_type = ictx.fmt_ctx->streams[i]->codecpar->codec_type;
+        if (codec_type == AVMEDIA_TYPE_AUDIO)
+        {
+            stream.i_fmt_ctx = ictx.fmt_ctx;
+            stream.i_codec_ctx = ictx.codec_ctx[i];
+            stream.stream = ictx.fmt_ctx->streams[i];
+            stream.stream_idx = i;
+            stream.flt_ctx = &fctxs[i];
+            stream.aud_fifo = oafifo[stream_index];
+            stream.o_fmt_ctx = octx.fmt_ctx;
+            stream.o_codec_ctx = octx.codec_ctx[stream_index];
+            flush_audio(&stream);
         }
-
-        /* flush encoder */
-        ret = flush_encoder(i);
-        if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Flushing encoder failed\n");
-            goto end;
+        else if (codec_type == AVMEDIA_TYPE_VIDEO)
+        {
+            stream.i_fmt_ctx = ictx.fmt_ctx;
+            stream.i_codec_ctx = ictx.codec_ctx[i];
+            stream.stream = ictx.fmt_ctx->streams[i];
+            stream.stream_idx = i;
+            stream.flt_ctx = &fctxs[i];
+            stream.o_fmt_ctx = octx.fmt_ctx;
+            flush_video(&stream);
+        }
+        else
+        {
+            continue;
         }
     }
-#endif
-
     av_write_trailer(octx.fmt_ctx);
 
 end:

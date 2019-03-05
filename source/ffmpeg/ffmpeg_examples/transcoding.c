@@ -486,7 +486,7 @@ static int filter_encode_write_frame(AVFrame *frame, unsigned int stream_index)
 
     av_log(NULL, AV_LOG_INFO, "Pushing decoded frame to filters\n");
     /* push the decoded frame into the filtergraph */
-    // 1. frame填入滤镜图
+    // 1. frame填入滤镜图。frame为NULL时标识EOF，返回值为0
     ret = av_buffersrc_add_frame_flags(filter_ctx[stream_index].buffersrc_ctx,
             frame, 0);
     if (ret < 0) {
@@ -503,6 +503,7 @@ static int filter_encode_write_frame(AVFrame *frame, unsigned int stream_index)
         }
         av_log(NULL, AV_LOG_INFO, "Pulling filtered frame from filters\n");
         // 2. 从滤镜图获取处理后的frame(仅是将图像或声音格式转换为编码器采用的格式)
+        //    当向buffer滤镜中写入NULL时，此函数将返回AVERROR_EOF
         ret = av_buffersink_get_frame(filter_ctx[stream_index].buffersink_ctx,
                 filt_frame);
         if (ret < 0) {

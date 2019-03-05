@@ -3,7 +3,7 @@
 
 //
 // retrun 1:                got a frame success
-//        AVERROR(EAGAIN):  need mored packet
+//        AVERROR(EAGAIN):  need more packet
 //        AVERROR_EOF:      end of file, decoder has been flushed
 //        <0:               error
 int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet, AVFrame *frame)
@@ -94,11 +94,15 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
 
 int av_encode_frame(AVCodecContext *enc_ctx, AVFrame *frame, AVPacket *packet)
 {
-    int ret = avcodec_send_frame(enc_ctx, frame);
+    int ret = -1;
+    
+    // 第一次发送flush packet会返回成功，进入刷洗模式，可调用avcodec_receive_packet()
+    // 将编码器中缓存的帧(可能不止一个)取出来
+    // 后续再发送flush packet将返回AVERROR_EOF
+    ret = avcodec_send_frame(enc_ctx, frame);
     if (ret == AVERROR_EOF)
     {
         av_log(NULL, AV_LOG_INFO, "avcodec_send_frame() encoder flushed\n");
-        return ret;
     }
     else if (ret == AVERROR(EAGAIN))
     {
@@ -119,7 +123,7 @@ int av_encode_frame(AVCodecContext *enc_ctx, AVFrame *frame, AVPacket *packet)
     {
         av_log(NULL, AV_LOG_INFO, "avcodec_receive_packet() need more input\n");
     }
-
+    
     return ret;
 }
 

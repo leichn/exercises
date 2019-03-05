@@ -336,7 +336,7 @@ int deinit_filters(filter_ctx_t *fctx)
 
 int filtering_frame(const filter_ctx_t *fctx, AVFrame *frame_in, AVFrame *frame_out)
 {
-    int ret;
+    int ret = 1;
     
     // 将frame送入filtergraph
     ret = av_buffersrc_add_frame_flags(fctx->bufsrc_ctx, frame_in, AV_BUFFERSRC_FLAG_KEEP_REF);
@@ -348,17 +348,20 @@ int filtering_frame(const filter_ctx_t *fctx, AVFrame *frame_in, AVFrame *frame_
     
     // 从filtergraph获取经过处理的frame
     ret = av_buffersink_get_frame(fctx->bufsink_ctx, frame_out);
-    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+    if (ret == AVERROR_EOF)
     {
-        av_log(NULL, AV_LOG_WARNING, "Need more frames\n");
-        return 0;
+        av_log(NULL, AV_LOG_WARNING, "filter flushed\n");
+    }
+    else if (ret == AVERROR(EAGAIN))
+    {
+        av_log(NULL, AV_LOG_WARNING, "filter need more frames\n");
     }
     else if (ret < 0)
     {
-        return ret;
+        av_log(NULL, AV_LOG_WARNING, "filter error %d\n", ret);
     }
 
-    return 1;
+    return ret;
 }
 
 
