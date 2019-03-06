@@ -23,7 +23,7 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
             if (ret >= 0)
             {
                 frame->pts = frame->best_effort_timestamp;
-                frame->pts = frame->pkt_dts;
+                //frame->pts = frame->pkt_dts;
             }
         }
         else if (dec_ctx->codec_type ==  AVMEDIA_TYPE_AUDIO)

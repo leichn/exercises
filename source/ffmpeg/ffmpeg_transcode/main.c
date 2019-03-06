@@ -419,6 +419,10 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
     }
 
 flush_encoder:
+    if (frame_flt != NULL)
+    {
+        frame_flt->pict_type = AV_PICTURE_TYPE_NONE;
+    }
     ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
     if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给编码器
     {

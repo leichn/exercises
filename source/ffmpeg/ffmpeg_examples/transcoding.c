@@ -28,6 +28,8 @@
  * @example transcoding.c
  */
 
+// BUG: 结束时未冲洗解码器，导致输出文件中丢失了几帧
+
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavfilter/buffersink.h>
