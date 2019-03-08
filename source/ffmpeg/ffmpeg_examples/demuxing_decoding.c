@@ -61,91 +61,7 @@ static int audio_frame_count = 0;
  * differences of API usage between them. */
 static int refcount = 0;
 
-static int decode_packet(int *got_frame, int cached)
-{
-    int ret = 0;
-    int decoded = pkt.size;
-
-    *got_frame = 0;
-
-    if (pkt.stream_index == video_stream_idx) {
-        /* decode video frame */
-        ret = avcodec_decode_video2(video_dec_ctx, frame, got_frame, &pkt);
-        if (ret < 0) {
-            fprintf(stderr, "Error decoding video frame (%s)\n", av_err2str(ret));
-            return ret;
-        }
-
-        if (*got_frame) {
-
-            if (frame->width != width || frame->height != height ||
-                frame->format != pix_fmt) {
-                /* To handle this change, one could call av_image_alloc again and
-                 * decode the following frames into another rawvideo file. */
-                fprintf(stderr, "Error: Width, height and pixel format have to be "
-                        "constant in a rawvideo file, but the width, height or "
-                        "pixel format of the input video changed:\n"
-                        "old: width = %d, height = %d, format = %s\n"
-                        "new: width = %d, height = %d, format = %s\n",
-                        width, height, av_get_pix_fmt_name(pix_fmt),
-                        frame->width, frame->height,
-                        av_get_pix_fmt_name(frame->format));
-                return -1;
-            }
-
-            printf("video_frame%s n:%d coded_n:%d\n",
-                   cached ? "(cached)" : "",
-                   video_frame_count++, frame->coded_picture_number);
-
-            /* copy decoded frame to destination buffer:
-             * this is required since rawvideo expects non aligned data */
-            av_image_copy(video_dst_data, video_dst_linesize,
-                          (const uint8_t **)(frame->data), frame->linesize,
-                          pix_fmt, width, height);
-
-            /* write to rawvideo file */
-            fwrite(video_dst_data[0], 1, video_dst_bufsize, video_dst_file);
-        }
-    } else if (pkt.stream_index == audio_stream_idx) {
-        /* decode audio frame */
-        ret = avcodec_decode_audio4(audio_dec_ctx, frame, got_frame, &pkt);
-        if (ret < 0) {
-            fprintf(stderr, "Error decoding audio frame (%s)\n", av_err2str(ret));
-            return ret;
-        }
-        /* Some audio decoders decode only part of the packet, and have to be
-         * called again with the remainder of the packet data.
-         * Sample: fate-suite/lossless-audio/luckynight-partial.shn
-         * Also, some decoders might over-read the packet. */
-        decoded = FFMIN(ret, pkt.size);
-
-        if (*got_frame) {
-            size_t unpadded_linesize = frame->nb_samples * av_get_bytes_per_sample(frame->format);
-            printf("audio_frame%s n:%d nb_samples:%d pts:%s\n",
-                   cached ? "(cached)" : "",
-                   audio_frame_count++, frame->nb_samples,
-                   av_ts2timestr(frame->pts, &audio_dec_ctx->time_base));
-
-            /* Write the raw audio data samples of the first plane. This works
-             * fine for packed formats (e.g. AV_SAMPLE_FMT_S16). However,
-             * most audio decoders output planar audio, which uses a separate
-             * plane of audio samples for each channel (e.g. AV_SAMPLE_FMT_S16P).
-             * In other words, this code will write only the first audio channel
-             * in these cases.
-             * You should use libswresample or libavfilter to convert the frame
-             * to packed data. */
-            fwrite(frame->extended_data[0], 1, unpadded_linesize, audio_dst_file);
-        }
-    }
-
-    /* If we use frame reference counting, we own the data and need
-     * to de-reference it when we don't use it anymore */
-    if (*got_frame && refcount)
-        av_frame_unref(frame);
-
-    return decoded;
-}
-
+// 根据输入参数type(流类型：音频/视频)，选择一路音频流或视频流，流索引存入stream_idx并构建AVCodecContext
 static int open_codec_context(int *stream_idx,
                               AVCodecContext **dec_ctx, AVFormatContext *fmt_ctx, enum AVMediaType type)
 {
@@ -154,16 +70,19 @@ static int open_codec_context(int *stream_idx,
     AVCodec *dec = NULL;
     AVDictionary *opts = NULL;
 
+    // 1. 选一路流，type参数指定流类型，音频流、视频流、字幕流等，返回stream index
     ret = av_find_best_stream(fmt_ctx, type, -1, -1, NULL, 0);
     if (ret < 0) {
         fprintf(stderr, "Could not find %s stream in input file '%s'\n",
                 av_get_media_type_string(type), src_filename);
         return ret;
     } else {
-        stream_index = ret;
-        st = fmt_ctx->streams[stream_index];
+        stream_index = ret;                     // stream index
+        st = fmt_ctx->streams[stream_index];    // stream
 
+        // 2. 构建AVCodecContext
         /* find decoder for the stream */
+        // 2.1 获取解码器AVCodec
         dec = avcodec_find_decoder(st->codecpar->codec_id);
         if (!dec) {
             fprintf(stderr, "Failed to find %s codec\n",
@@ -172,6 +91,7 @@ static int open_codec_context(int *stream_idx,
         }
 
         /* Allocate a codec context for the decoder */
+        // 2.2 AVCodecContext初始化：分配结构体，使用AVCodec初始化AVCodecContext相应成员为默认值
         *dec_ctx = avcodec_alloc_context3(dec);
         if (!*dec_ctx) {
             fprintf(stderr, "Failed to allocate the %s codec context\n",
@@ -180,6 +100,7 @@ static int open_codec_context(int *stream_idx,
         }
 
         /* Copy codec parameters from input stream to output codec context */
+        // 2.3 AVCodecContext初始化：使用codec参数codecpar初始化AVCodecContext相应成员
         if ((ret = avcodec_parameters_to_context(*dec_ctx, st->codecpar)) < 0) {
             fprintf(stderr, "Failed to copy %s codec parameters to decoder context\n",
                     av_get_media_type_string(type));
@@ -187,7 +108,9 @@ static int open_codec_context(int *stream_idx,
         }
 
         /* Init the decoders, with or without reference counting */
+        // TODO: 这个参数做啥的？
         av_dict_set(&opts, "refcounted_frames", refcount ? "1" : "0", 0);
+        // 2.4 AVCodecContext初始化：使用codec参数codecpar初始化AVCodecContext，初始化完成
         if ((ret = avcodec_open2(*dec_ctx, dec, &opts)) < 0) {
             fprintf(stderr, "Failed to open %s codec\n",
                     av_get_media_type_string(type));
@@ -253,21 +176,24 @@ int main (int argc, char **argv)
     audio_dst_filename = argv[3];
 
     /* open input file, and allocate format context */
+    // 1. 打开视频文件：读取文件头，将文件格式信息存储在fmt_ctx中
     if (avformat_open_input(&fmt_ctx, src_filename, NULL, NULL) < 0) {
         fprintf(stderr, "Could not open source file %s\n", src_filename);
         exit(1);
     }
 
     /* retrieve stream information */
+    // 2. 尝试解码一小段视频，将取到的流信息填入fmt_ctx.streams
     if (avformat_find_stream_info(fmt_ctx, NULL) < 0) {
         fprintf(stderr, "Could not find stream information\n");
         exit(1);
     }
 
+    // 3. 选择一路视频流，保存流索引并构建AVCodecContext
     if (open_codec_context(&video_stream_idx, &video_dec_ctx, fmt_ctx, AVMEDIA_TYPE_VIDEO) >= 0) {
         video_stream = fmt_ctx->streams[video_stream_idx];
 
-        video_dst_file = fopen(video_dst_filename, "wb");
+        video_dst_file = fopen(video_dst_filename, "wb");   // 此输出文件用于存储视频数据
         if (!video_dst_file) {
             fprintf(stderr, "Could not open destination file %s\n", video_dst_filename);
             ret = 1;
@@ -278,6 +204,7 @@ int main (int argc, char **argv)
         width = video_dec_ctx->width;
         height = video_dec_ctx->height;
         pix_fmt = video_dec_ctx->pix_fmt;
+        // 为一帧图像构建缓冲区，返回值为缓冲区尺寸
         ret = av_image_alloc(video_dst_data, video_dst_linesize,
                              width, height, pix_fmt, 1);
         if (ret < 0) {
@@ -287,9 +214,10 @@ int main (int argc, char **argv)
         video_dst_bufsize = ret;
     }
 
+    // 4. 选择一路音频流，保存流索引并构建AVCodecContext
     if (open_codec_context(&audio_stream_idx, &audio_dec_ctx, fmt_ctx, AVMEDIA_TYPE_AUDIO) >= 0) {
         audio_stream = fmt_ctx->streams[audio_stream_idx];
-        audio_dst_file = fopen(audio_dst_filename, "wb");
+        audio_dst_file = fopen(audio_dst_filename, "wb");   // 此输出文件用于存储音频数据
         if (!audio_dst_file) {
             fprintf(stderr, "Could not open destination file %s\n", audio_dst_filename);
             ret = 1;
@@ -324,9 +252,19 @@ int main (int argc, char **argv)
         printf("Demuxing audio from file '%s' into '%s'\n", src_filename, audio_dst_filename);
 
     /* read frames from the file */
+    // 5. 从输入文件中读取packet
     while (av_read_frame(fmt_ctx, &pkt) >= 0) {
+        if (pkt.stream_index == video_stream_idx) {
+            fwrite(pkt->data, 1, pkt->size, video_dst_file);
+        }
+        else if (pkt.stream_index == audio_stream_idx) {
+            fwrite(pkt->data, 1, pkt->size, audio_dst_file);
+        }
+         
+            
         AVPacket orig_pkt = pkt;
         do {
+            // 6. 解码并写入输出文件中
             ret = decode_packet(&got_frame, 0);
             if (ret < 0)
                 break;
@@ -340,6 +278,7 @@ int main (int argc, char **argv)
     pkt.data = NULL;
     pkt.size = 0;
     do {
+        // 7. 冲洗解码器
         decode_packet(&got_frame, 1);
     } while (got_frame);
 

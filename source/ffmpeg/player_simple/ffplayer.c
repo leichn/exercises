@@ -73,7 +73,8 @@ int main(int argc, char *argv[])
     // 将文件相关信息打印在标准错误设备上
     av_dump_format(p_fmt_ctx, 0, argv[1], 0);
 
-    // A3. 查找第一个视频流
+    // A3. 查找第一个视频流。选择哪一路流进行处理有多种方法，可手动指定某一路流，
+    //     也可调用av_find_best_stream()自动选择
     v_idx = -1;
     for (i=0; i<p_fmt_ctx->nb_streams; i++)
     {
