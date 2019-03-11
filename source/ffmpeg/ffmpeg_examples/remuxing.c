@@ -173,6 +173,7 @@ int main(int argc, char **argv)
         // 输出：avformat_write_header()会根据输出的封装格式确定每个流的time_base并写入文件中
         // AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
         // 所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
+        // 如何几句可以简化为一句av_packet_rescale_ts(&pkt, in_stream->time_base, out_stream->time_base);
         pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
         pkt.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base, AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX);
         pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
