@@ -1,2 +1,2 @@
 #!/bin/bash
-gcc -o demuxing demuxing.c -lavformat -lavcodec
+gcc -o demuxing demuxing.c -lavformat -lavcodec -g

@@ -4,7 +4,7 @@ int main (int argc, char **argv)
 {
     if (argc != 4)
     {
-        fprintf(stderr, "usage: %s test.avi test.mpeg2video test.mp2\n", argv[0]);
+        fprintf(stderr, "usage: %s test.ts test.h264 test.aac\n", argv[0]);
         exit(1);
     }
 
@@ -16,13 +16,15 @@ int main (int argc, char **argv)
 
     AVFormatContext *fmt_ctx = NULL;
     int ret = avformat_open_input(&fmt_ctx, input_fname, NULL, NULL);
-    if (ret < 0) {
-        fprintf(stderr, "Could not open input file %s\n", input_fname);
-        exit(1);
-    }
+    ret = avformat_find_stream_info(fmt_ctx, NULL);
 
     int video_idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     int audio_idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    if (video_idx < 0 || audio_idx < 0)
+    {
+        printf("find stream failed: %d %d\n", video_idx, audio_idx);
+        return -1;
+    }
 
     av_dump_format(fmt_ctx, 0, input_fname, 0);
 
@@ -36,11 +38,11 @@ int main (int argc, char **argv)
         if (pkt.stream_index == video_idx)
         {
             ret = fwrite(pkt.data, 1, pkt.size, video_dst_file);
-            printf("Write video packet %x %3"PRId64" (size=%5d)\n", pkt.pos, pkt.pts, ret);
+            //printf("vp %x %3"PRId64" %3"PRId64" (size=%5d)\n", pkt.pos, pkt.pts, pkt.dts, ret);
         }
         else if (pkt.stream_index == audio_idx) {
             ret = fwrite(pkt.data, 1, pkt.size, audio_dst_file);
-            printf("Write audio packet %x %3"PRId64" (size=%5d)\n", pkt.pos, pkt.pts, ret);
+            //printf("ap %x %3"PRId64" %3"PRId64" (size=%5d)\n", pkt.pos, pkt.pts, pkt.dts, ret);
         }
         av_packet_unref(&pkt);
     }
