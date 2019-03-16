@@ -2,7 +2,7 @@
 #include "av_codec.h"
 
 //
-// retrun 1:                got a frame success
+// retrun 0:                got a frame success
 //        AVERROR(EAGAIN):  need more packet
 //        AVERROR_EOF:      end of file, decoder has been flushed
 //        <0:               error
@@ -24,6 +24,11 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
             {
                 frame->pts = frame->best_effort_timestamp;
                 //frame->pts = frame->pkt_dts;
+                if (frame->pkt_dts == AV_NOPTS_VALUE)
+                {
+                    frame->pkt_dts = frame->pts;
+                    printf("Set video dts %d\n", frame->pkt_dts);
+                }
             }
         }
         else if (dec_ctx->codec_type ==  AVMEDIA_TYPE_AUDIO)
@@ -40,12 +45,17 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
                 {
                     frame->pts = av_rescale_q(frame->pts, dec_ctx->pkt_timebase, tb);
                 }
+                if (frame->pkt_dts == AV_NOPTS_VALUE)
+                {
+                    frame->pkt_dts = frame->pts;
+                    printf("Set audio dts %d\n", frame->pkt_dts);
+                }
             }
         }
 
         if (ret >= 0)                   // 成功解码得到一个视频帧或一个音频帧，则返回
         {
-            return 1;   
+            return ret;   
         }
         else if (ret == AVERROR_EOF)    // 解码器已冲洗，解码中所有帧已取出
         {
@@ -55,7 +65,7 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
         }
         else if (ret == AVERROR(EAGAIN))// 解码器需要喂数据
         {
-            if (*new_packet)   // 本函数中已向解码器喂过数据，因此需要从文件读取新数据
+            if (!(*new_packet))         // 本函数中已向解码器喂过数据，因此需要从文件读取新数据
             {
                 av_log(NULL, AV_LOG_INFO, "Decoder need more packet\n");
                 return ret;
@@ -96,7 +106,7 @@ int av_encode_frame(AVCodecContext *enc_ctx, AVFrame *frame, AVPacket *packet)
 {
     int ret = -1;
     
-    // 第一次发送flush packet会返回成功，进入刷洗模式，可调用avcodec_receive_packet()
+    // 第一次发送flush packet会返回成功，进入冲洗模式，可调用avcodec_receive_packet()
     // 将编码器中缓存的帧(可能不止一个)取出来
     // 后续再发送flush packet将返回AVERROR_EOF
     ret = avcodec_send_frame(enc_ctx, frame);

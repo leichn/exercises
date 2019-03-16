@@ -387,79 +387,87 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
     bool flt_finished = false;
     bool unused_flag;
 
-    int ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &unused_flag, frame_dec);
-    if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
-    {
-        av_log(NULL, AV_LOG_INFO, "decode vframe need more packet\n");
-        goto end;
-    }
-    else if (ret == AVERROR_EOF)    // 解码器已冲洗
-    {
-        av_log(NULL, AV_LOG_INFO, "decode vframe EOF\n");
-        dec_finished = true;
-        frame_dec = NULL;           // flush filter
-    }
-    else if (ret < 0)
-    {
-        av_log(NULL, AV_LOG_ERROR, "decode vframe error %d\n", ret);
-        goto end;
-    }
+    bool new_packet = true;
+    int ret = 0;
 
-    ret = filtering_frame(sctx->flt_ctx, frame_dec, frame_flt);
-    if (ret == AVERROR_EOF)
+    // 一个视频packet只包含一个视频frame，但冲洗解码器时一个flush packet会取出
+    // 多个frame出来，每次循环取处理一个frame
+    while (1)   
     {
-        av_log(NULL, AV_LOG_INFO, "filtering vframe EOF\n");
-        flt_finished = true;
-        frame_flt = NULL;
-    }
-    else if (ret < 0)
-    {
-        av_log(NULL, AV_LOG_INFO, "filtering vframe error %d\n", ret);
-        goto end;
-    }
+        ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &new_packet, frame_dec);
+        if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
+        {
+            av_log(NULL, AV_LOG_INFO, "decode vframe need more packet\n");
+            goto end;
+        }
+        else if (ret == AVERROR_EOF)    // 解码器已冲洗
+        {
+            av_log(NULL, AV_LOG_INFO, "decode vframe EOF\n");
+            dec_finished = true;
+            frame_dec = NULL;           // flush filter
+        }
+        else if (ret < 0)
+        {
+            av_log(NULL, AV_LOG_ERROR, "decode vframe error %d\n", ret);
+            goto end;
+        }
+
+        ret = filtering_frame(sctx->flt_ctx, frame_dec, frame_flt);
+        if (ret == AVERROR_EOF)
+        {
+            av_log(NULL, AV_LOG_INFO, "filtering vframe EOF\n");
+            flt_finished = true;
+            frame_flt = NULL;
+        }
+        else if (ret < 0)
+        {
+            av_log(NULL, AV_LOG_INFO, "filtering vframe error %d\n", ret);
+            goto end;
+        }
 
 flush_encoder:
-    if (frame_flt != NULL)
-    {
-        frame_flt->pict_type = AV_PICTURE_TYPE_NONE;
-    }
-    ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
-    if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给编码器
-    {
-        av_log(NULL, AV_LOG_INFO, "encode vframe need more packet\n");
-        goto end;
-    }
-    else if (ret == AVERROR_EOF)
-    {
-        av_log(NULL, AV_LOG_INFO, "encode vframe EOF\n");
-        enc_finished = true;
-        goto end;
-    }
-    else if (ret < 0)
-    {
-        av_log(NULL, AV_LOG_ERROR, "encode vframe error %d\n", ret);
-        goto end;
-    }
+        if (frame_flt != NULL)
+        {
+            frame_flt->pict_type = AV_PICTURE_TYPE_NONE;
+        }
+        ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
+        if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给编码器
+        {
+            av_log(NULL, AV_LOG_INFO, "encode vframe need more packet\n");
+            goto end;
+        }
+        else if (ret == AVERROR_EOF)
+        {
+            av_log(NULL, AV_LOG_INFO, "encode vframe EOF\n");
+            enc_finished = true;
+            goto end;
+        }
+        else if (ret < 0)
+        {
+            av_log(NULL, AV_LOG_ERROR, "encode vframe error %d\n", ret);
+            goto end;
+        }
 
-    // 2. AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
-    //    所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
-    opacket.stream_index = sctx->stream_idx;
-    av_packet_rescale_ts(&opacket,
-                            sctx->o_codec_ctx->time_base,
-                            sctx->stream->time_base);
+        // 2. AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
+        //    所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
+        opacket.stream_index = sctx->stream_idx;
+        av_packet_rescale_ts(&opacket,
+                                sctx->o_codec_ctx->time_base,
+                                sctx->stream->time_base);
 
-    // 3. 将编码后的packet写入输出媒体文件
-    ret = av_interleaved_write_frame(sctx->o_fmt_ctx, &opacket);
-    av_packet_unref(&opacket);
-    if (ret < 0)
-    {
-        av_log(NULL, AV_LOG_ERROR, "write vframe error %d\n", ret);
-        goto end;
-    }
+        // 3. 将编码后的packet写入输出媒体文件
+        ret = av_interleaved_write_frame(sctx->o_fmt_ctx, &opacket);
+        av_packet_unref(&opacket);
+        if (ret < 0)
+        {
+            av_log(NULL, AV_LOG_ERROR, "write vframe error %d\n", ret);
+            goto end;
+        }
 
-    if (flt_finished)
-    {
-        goto flush_encoder;
+        if (flt_finished)
+        {
+            goto flush_encoder;
+        }
     }
     
 end:
