@@ -22,8 +22,11 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
             ret = avcodec_receive_frame(dec_ctx, frame);
             if (ret >= 0)
             {
-                frame->pts = frame->best_effort_timestamp;
-                //frame->pts = frame->pkt_dts;
+                if (frame->pts == AV_NOPTS_VALUE)
+                {
+                    frame->pts = frame->best_effort_timestamp;
+                    printf("Set video pts %d\n", frame->pts);
+                }
                 if (frame->pkt_dts == AV_NOPTS_VALUE)
                 {
                     frame->pkt_dts = frame->pts;
@@ -39,11 +42,10 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
             ret = avcodec_receive_frame(dec_ctx, frame);
             if (ret >= 0)
             {
-                // 时基转换，从d->avctx->pkt_timebase时基转换到1/frame->sample_rate时基
-                AVRational tb = (AVRational){1, frame->sample_rate};
-                if (frame->pts != AV_NOPTS_VALUE)
+                if (frame->pts == AV_NOPTS_VALUE)
                 {
-                    frame->pts = av_rescale_q(frame->pts, dec_ctx->pkt_timebase, tb);
+                    frame->pts = frame->best_effort_timestamp;
+                    printf("Set video pts %d\n", frame->pts);
                 }
                 if (frame->pkt_dts == AV_NOPTS_VALUE)
                 {

@@ -210,9 +210,7 @@ int open_output_file(const char *filename, const inout_ctx_t *ictx, inout_ctx_t 
                 return ret;
             }
 
-            // 3.6 设置输出流time_base
-            out_stream->time_base = enc_ctx->time_base;
-            // 3.7 保存输出流contex
+            // 3.6 保存输出流contex
             pp_enc_ctx[i] = enc_ctx;
         } 
         else if (dec_ctx->codec_type == AVMEDIA_TYPE_UNKNOWN)
@@ -230,7 +228,6 @@ int open_output_file(const char *filename, const inout_ctx_t *ictx, inout_ctx_t 
                 av_log(NULL, AV_LOG_ERROR, "Copying parameters for stream #%u failed\n", i);
                 return ret;
             }
-            out_stream->time_base = in_stream->time_base;
         }
 
     }

@@ -196,18 +196,22 @@ static int read_frame_from_audio_fifo(AVAudioFifo *fifo,
 
     /* Initialize temporary storage for one output frame. */
     // 分配AVFrame及AVFrame数据缓冲区
-    if (init_audio_output_frame(&output_frame, occtx, frame_size))
+    int ret = init_audio_output_frame(&output_frame, occtx, frame_size);
+    if (ret < 0)
     {
         return AVERROR_EXIT;
     }
 
     // 从FIFO从读取数据填充到output_frame->data中
-    if (av_audio_fifo_read(fifo, (void **)output_frame->data, frame_size) < frame_size)
+    ret = av_audio_fifo_size(fifo);
+    ret = av_audio_fifo_read(fifo, (void **)output_frame->data, frame_size);
+    if (ret < frame_size)
     {
         fprintf(stderr, "Could not read data from FIFO\n");
         av_frame_free(&output_frame);
         return AVERROR_EXIT;
     }
+    ret = av_audio_fifo_size(fifo);
 
     *frame = output_frame;
 
@@ -275,6 +279,7 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
             goto end;
         }
 
+        #if 0
         if (!dec_finished)
         {
             uint8_t** new_data = frame_flt->extended_data;  // 本帧中多个声道音频数据
@@ -309,12 +314,21 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
                     goto end;
                 }
             }
+        #else
+        {
+            bool flushing = dec_finished;
+            frame_enc = flushing ? NULL : frame_flt;
+        #endif
 
 flush_encoder:
             ret = av_encode_frame(sctx->o_codec_ctx, frame_enc, &opacket);
             if (ret == AVERROR(EAGAIN))     // 需要获取新的frame喂给编码器
             {
                 av_log(NULL, AV_LOG_INFO, "encode aframe need more packet\n");
+                if (frame_enc != NULL)
+                {
+                    av_frame_free(&frame_enc);
+                }
                 continue;
             }
             else if (ret == AVERROR_EOF)
@@ -358,9 +372,18 @@ flush_encoder:
     
 end:
     av_packet_unref(&opacket);
-    av_frame_free(&frame_enc);
-    av_frame_free(&frame_flt);
-    av_frame_free(&frame_dec);
+    if (frame_enc != NULL)
+    {
+        av_frame_free(&frame_enc);
+    }
+    if (frame_flt != NULL)
+    {
+        //av_frame_free(&frame_flt);
+    }
+    if (frame_dec != NULL)
+    {
+        av_frame_free(&frame_dec);
+    }
     
     return ret;
 }

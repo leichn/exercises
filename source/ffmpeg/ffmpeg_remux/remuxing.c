@@ -138,10 +138,10 @@ int main(int argc, char **argv)
 
         /* copy packet */
         // 3.3 更新packet中的pts和dts
-        // 关于AVStream.time_base的说明：
+        // 关于AVStream.time_base(容器中的time_base)的说明：
         // 输入：输入流中含有time_base，在avformat_find_stream_info()中可取到每个流中的time_base
         // 输出：avformat_write_header()会根据输出的封装格式确定每个流的time_base并写入文件中
-        // AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
+        // AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式AVStream.time_base不同
         // 所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
         av_packet_rescale_ts(&pkt, in_stream->time_base, out_stream->time_base);
         pkt.pos = -1;

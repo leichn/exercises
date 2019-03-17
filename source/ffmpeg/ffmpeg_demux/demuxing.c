@@ -38,7 +38,7 @@ int main (int argc, char **argv)
         if (pkt.stream_index == video_idx)
         {
             ret = fwrite(pkt.data, 1, pkt.size, video_dst_file);
-            //printf("vp %x %3"PRId64" %3"PRId64" (size=%5d)\n", pkt.pos, pkt.pts, pkt.dts, ret);
+            printf("vp %x %3"PRId64" %3"PRId64" (size=%5d)\n", pkt.pos, pkt.pts, pkt.dts, ret);
         }
         else if (pkt.stream_index == audio_idx) {
             ret = fwrite(pkt.data, 1, pkt.size, audio_dst_file);
