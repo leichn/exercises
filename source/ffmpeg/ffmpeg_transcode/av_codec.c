@@ -25,12 +25,12 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
                 if (frame->pts == AV_NOPTS_VALUE)
                 {
                     frame->pts = frame->best_effort_timestamp;
-                    printf("Set video pts %d\n", frame->pts);
+                    printf("set video pts %d\n", frame->pts);
                 }
                 if (frame->pkt_dts == AV_NOPTS_VALUE)
                 {
-                    frame->pkt_dts = frame->pts;
-                    printf("Set video dts %d\n", frame->pkt_dts);
+                    //frame->pkt_dts = frame->pts;
+                    //printf("set video dts %d\n", frame->pkt_dts);
                 }
             }
         }
@@ -45,12 +45,12 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
                 if (frame->pts == AV_NOPTS_VALUE)
                 {
                     frame->pts = frame->best_effort_timestamp;
-                    printf("Set video pts %d\n", frame->pts);
+                    printf("set audio pts %d\n", frame->pts);
                 }
                 if (frame->pkt_dts == AV_NOPTS_VALUE)
                 {
-                    frame->pkt_dts = frame->pts;
-                    printf("Set audio dts %d\n", frame->pkt_dts);
+                    //frame->pkt_dts = frame->pts;
+                    //printf("set audio dts %d\n", frame->pkt_dts);
                 }
             }
         }
@@ -129,11 +129,11 @@ int av_encode_frame(AVCodecContext *enc_ctx, AVFrame *frame, AVPacket *packet)
     ret = avcodec_receive_packet(enc_ctx, packet);
     if (ret == AVERROR_EOF)
     {
-        av_log(NULL, AV_LOG_INFO, "avcodec_receive_packet() encoder flushed\n");
+        av_log(NULL, AV_LOG_INFO, "avcodec_recieve_packet() encoder flushed\n");
     }
     else if (ret == AVERROR(EAGAIN))
     {
-        av_log(NULL, AV_LOG_INFO, "avcodec_receive_packet() need more input\n");
+        av_log(NULL, AV_LOG_INFO, "avcodec_recieve_packet() need more input\n");
     }
     
     return ret;

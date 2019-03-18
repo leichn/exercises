@@ -165,6 +165,17 @@ int open_output_file(const char *filename, const inout_ctx_t *ictx, inout_ctx_t 
                 }
                 /* video time_base can be set to whatever is handy and supported by encoder */
                 enc_ctx->time_base = av_inv_q(dec_ctx->framerate);  // 时基：解码器帧率取倒数
+                enc_ctx->framerate = dec_ctx->framerate;
+                //enc_ctx->bit_rate = dec_ctx->bit_rate;
+
+                /* emit one intra frame every ten frames
+                * check frame pict_type before passing frame
+                * to encoder, if frame->pict_type is AV_PICTURE_TYPE_I
+                * then gop_size is ignored and the output of encoder
+                * will always be I frame irrespective to gop_size
+                */
+                enc_ctx->gop_size = dec_ctx->gop_size;
+                enc_ctx->max_b_frames = 1;
             }
             else
             {

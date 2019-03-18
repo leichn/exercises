@@ -20,7 +20,8 @@ typedef struct
     AVCodecContext* o_codec_ctx;
     filter_ctx_t* flt_ctx;
     AVAudioFifo* aud_fifo;
-    AVStream* stream;
+    AVStream* i_stream;
+    AVStream* o_stream;
     int stream_idx;
 }   stream_ctx_t;
 
@@ -248,6 +249,7 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
         dec_finished = false;
         enc_finished = false;
 
+        av_packet_rescale_ts(ipacket, sctx->i_stream->time_base, sctx->o_codec_ctx->time_base);
         ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &new_packet, frame_dec);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
         {
@@ -343,7 +345,7 @@ flush_encoder:
             opacket.stream_index = sctx->stream_idx;
             av_packet_rescale_ts(&opacket,
                                  sctx->o_codec_ctx->time_base,
-                                 sctx->stream->time_base);
+                                 sctx->o_stream->time_base);
             
             av_log(NULL, AV_LOG_DEBUG, "Muxing frame\n");
 
@@ -417,6 +419,7 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
     // 多个frame出来，每次循环取处理一个frame
     while (1)   
     {
+        av_packet_rescale_ts(ipacket, sctx->i_stream->time_base, sctx->o_codec_ctx->time_base);
         ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &new_packet, frame_dec);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
         {
@@ -474,9 +477,7 @@ flush_encoder:
         // 2. AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
         //    所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
         opacket.stream_index = sctx->stream_idx;
-        av_packet_rescale_ts(&opacket,
-                                sctx->o_codec_ctx->time_base,
-                                sctx->stream->time_base);
+        av_packet_rescale_ts(&opacket, sctx->o_codec_ctx->time_base, sctx->o_stream->time_base);
 
         // 3. 将编码后的packet写入输出媒体文件
         ret = av_interleaved_write_frame(sctx->o_fmt_ctx, &opacket);
@@ -666,12 +667,13 @@ int main(int argc, char **argv)
         {
             stream.i_fmt_ctx = ictx.fmt_ctx;
             stream.i_codec_ctx = ictx.codec_ctx[stream_index];
-            stream.stream = ictx.fmt_ctx->streams[stream_index];
+            stream.i_stream = ictx.fmt_ctx->streams[stream_index];
             stream.stream_idx = stream_index;
             stream.flt_ctx = &fctxs[stream_index];
             stream.aud_fifo = oafifo[stream_index];
             stream.o_fmt_ctx = octx.fmt_ctx;
             stream.o_codec_ctx = octx.codec_ctx[stream_index];
+            stream.o_stream = octx.fmt_ctx->streams[stream_index];
             ret = transcode_audio(&stream, &ipacket);
             if (ret == AVERROR(EAGAIN))
             {
@@ -687,11 +689,12 @@ int main(int argc, char **argv)
         {
             stream.i_fmt_ctx = ictx.fmt_ctx;
             stream.i_codec_ctx = ictx.codec_ctx[stream_index];
-            stream.stream = ictx.fmt_ctx->streams[stream_index];
+            stream.i_stream = ictx.fmt_ctx->streams[stream_index];
             stream.stream_idx = stream_index;
             stream.flt_ctx = &fctxs[stream_index];
             stream.o_fmt_ctx = octx.fmt_ctx;
             stream.o_codec_ctx = octx.codec_ctx[stream_index];
+            stream.o_stream = octx.fmt_ctx->streams[stream_index];
             ret = transcode_video(&stream, &ipacket);
             if (ret == AVERROR(EAGAIN))
             {
@@ -727,22 +730,24 @@ int main(int argc, char **argv)
         {
             stream.i_fmt_ctx = ictx.fmt_ctx;
             stream.i_codec_ctx = ictx.codec_ctx[i];
-            stream.stream = ictx.fmt_ctx->streams[i];
+            stream.i_stream = ictx.fmt_ctx->streams[i];
             stream.stream_idx = i;
             stream.flt_ctx = &fctxs[i];
             stream.aud_fifo = oafifo[stream_index];
             stream.o_fmt_ctx = octx.fmt_ctx;
             stream.o_codec_ctx = octx.codec_ctx[stream_index];
+            stream.o_stream = octx.fmt_ctx->streams[stream_index];
             flush_audio(&stream);
         }
         else if (codec_type == AVMEDIA_TYPE_VIDEO)
         {
             stream.i_fmt_ctx = ictx.fmt_ctx;
             stream.i_codec_ctx = ictx.codec_ctx[i];
-            stream.stream = ictx.fmt_ctx->streams[i];
+            stream.i_stream = ictx.fmt_ctx->streams[i];
             stream.stream_idx = i;
             stream.flt_ctx = &fctxs[i];
             stream.o_fmt_ctx = octx.fmt_ctx;
+            stream.o_stream = octx.fmt_ctx->streams[stream_index];
             flush_video(&stream);
         }
         else
