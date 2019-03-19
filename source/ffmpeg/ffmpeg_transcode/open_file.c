@@ -174,8 +174,8 @@ int open_output_file(const char *filename, const inout_ctx_t *ictx, inout_ctx_t 
                 * then gop_size is ignored and the output of encoder
                 * will always be I frame irrespective to gop_size
                 */
-                enc_ctx->gop_size = dec_ctx->gop_size;
-                enc_ctx->max_b_frames = 1;
+                //enc_ctx->gop_size = dec_ctx->gop_size;
+                //enc_ctx->max_b_frames = 1;
             }
             else
             {

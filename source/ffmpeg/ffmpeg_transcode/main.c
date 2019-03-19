@@ -361,7 +361,6 @@ flush_encoder:
             {
                 goto flush_encoder;
             }
-            
         }
 
         if (enc_finished)
@@ -430,7 +429,7 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
         {
             av_log(NULL, AV_LOG_INFO, "decode vframe EOF\n");
             dec_finished = true;
-            frame_dec = NULL;           // flush filter
+            av_frame_free(&frame_dec);  // flush filter
         }
         else if (ret < 0)
         {
@@ -443,7 +442,7 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
         {
             av_log(NULL, AV_LOG_INFO, "filtering vframe EOF\n");
             flt_finished = true;
-            frame_flt = NULL;
+            av_frame_free(&frame_flt);  // flush encoder
         }
         else if (ret < 0)
         {
@@ -454,7 +453,7 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
 flush_encoder:
         if (frame_flt != NULL)
         {
-            frame_flt->pict_type = AV_PICTURE_TYPE_NONE;
+            //frame_flt->pict_type = AV_PICTURE_TYPE_NONE;
         }
         ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给编码器
@@ -665,6 +664,7 @@ int main(int argc, char **argv)
 
         if (codec_type == AVMEDIA_TYPE_AUDIO)
         {
+            continue;
             stream.i_fmt_ctx = ictx.fmt_ctx;
             stream.i_codec_ctx = ictx.codec_ctx[stream_index];
             stream.i_stream = ictx.fmt_ctx->streams[stream_index];
@@ -711,7 +711,7 @@ int main(int argc, char **argv)
             // AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
             // 所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
             av_packet_rescale_ts(&ipacket,
-                                 octx.codec_ctx[stream_index]->time_base,
+                                 ictx.fmt_ctx->streams[stream_index]->time_base,
                                  octx.fmt_ctx->streams[stream_index]->time_base);
 
             ret = av_interleaved_write_frame(octx.fmt_ctx, &ipacket);
