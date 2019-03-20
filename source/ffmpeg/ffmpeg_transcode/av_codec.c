@@ -63,20 +63,19 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
         else if (ret == AVERROR_EOF)    // 解码器已冲洗，解码中所有帧已取出
         {
             avcodec_flush_buffers(dec_ctx);
-            av_log(NULL, AV_LOG_INFO, "Decoder has been flushed\n");
             return ret;
         }
         else if (ret == AVERROR(EAGAIN))// 解码器需要喂数据
         {
             if (!(*new_packet))         // 本函数中已向解码器喂过数据，因此需要从文件读取新数据
             {
-                av_log(NULL, AV_LOG_INFO, "Decoder need more packet\n");
+                //av_log(NULL, AV_LOG_INFO, "decoder need more packet\n");
                 return ret;
             }
         }
         else                            // 错误
         {
-            av_log(NULL, AV_LOG_ERROR, "Decoder error %d\n", ret);
+            av_log(NULL, AV_LOG_ERROR, "decoder error %d\n", ret);
             return ret;
         }
 
@@ -92,8 +91,6 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
         //    发送packet的顺序是按dts递增的顺序，如IPBBPBB
         //    pkt.pos变量可以标识当前packet在视频文件中的地址偏移
         //    发送第一个 flush packet 会返回成功，后续的 flush packet 会返回AVERROR_EOF
-        packet->pts = 248;
-        //packet->dts = 250;
         ret = avcodec_send_packet(dec_ctx, packet);
         *new_packet = false;
         
@@ -128,15 +125,15 @@ int av_encode_frame(AVCodecContext *enc_ctx, AVFrame *frame, AVPacket *packet)
     ret = avcodec_send_frame(enc_ctx, frame);
     if (ret == AVERROR_EOF)
     {
-        av_log(NULL, AV_LOG_INFO, "avcodec_send_frame() encoder flushed\n");
+        //av_log(NULL, AV_LOG_INFO, "avcodec_send_frame() encoder flushed\n");
     }
     else if (ret == AVERROR(EAGAIN))
     {
-        av_log(NULL, AV_LOG_INFO, "avcodec_send_frame() need output read out\n");
+        //av_log(NULL, AV_LOG_INFO, "avcodec_send_frame() need output read out\n");
     }
     else if (ret < 0)
     {
-        av_log(NULL, AV_LOG_INFO, "avcodec_send_frame() error %d\n", ret);
+        //av_log(NULL, AV_LOG_INFO, "avcodec_send_frame() error %d\n", ret);
         return ret;
     }
 
@@ -147,7 +144,7 @@ int av_encode_frame(AVCodecContext *enc_ctx, AVFrame *frame, AVPacket *packet)
     }
     else if (ret == AVERROR(EAGAIN))
     {
-        av_log(NULL, AV_LOG_INFO, "avcodec_recieve_packet() need more input\n");
+        //av_log(NULL, AV_LOG_INFO, "avcodec_recieve_packet() need more input\n");
     }
     
     return ret;

@@ -329,7 +329,10 @@ end:
 
 int deinit_filters(filter_ctx_t *fctx)
 {
-    avfilter_graph_free(&fctx->filter_graph);
+    if (fctx != NULL && fctx->filter_graph != NULL)
+    {
+        avfilter_graph_free(&fctx->filter_graph);
+    }
 
     return 0;
 }

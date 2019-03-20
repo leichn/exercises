@@ -253,7 +253,7 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
         ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &new_packet, frame_dec);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
         {
-            av_log(NULL, AV_LOG_INFO, "decode aframe need more packet\n");
+            //av_log(NULL, AV_LOG_INFO, "decode aframe need more packet\n");
             goto end;
         }
         else if (ret == AVERROR_EOF)    // 解码器已冲洗
@@ -326,7 +326,7 @@ flush_encoder:
             ret = av_encode_frame(sctx->o_codec_ctx, frame_enc, &opacket);
             if (ret == AVERROR(EAGAIN))     // 需要获取新的frame喂给编码器
             {
-                av_log(NULL, AV_LOG_INFO, "encode aframe need more packet\n");
+                //av_log(NULL, AV_LOG_INFO, "encode aframe need more packet\n");
                 if (frame_enc != NULL)
                 {
                     av_frame_free(&frame_enc);
@@ -422,7 +422,7 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
         ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &new_packet, frame_dec);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
         {
-            av_log(NULL, AV_LOG_INFO, "decode vframe need more packet\n");
+            //av_log(NULL, AV_LOG_INFO, "decode vframe need more packet\n");
             goto end;
         }
         else if (ret == AVERROR_EOF)    // 解码器已冲洗
@@ -458,7 +458,7 @@ flush_encoder:
         ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给编码器
         {
-            av_log(NULL, AV_LOG_INFO, "encode vframe need more packet\n");
+            //av_log(NULL, AV_LOG_INFO, "encode vframe need more packet\n");
             goto end;
         }
         else if (ret == AVERROR_EOF)
@@ -662,30 +662,7 @@ int main(int argc, char **argv)
         codec_type = ictx.fmt_ctx->streams[stream_index]->codecpar->codec_type;
         av_log(NULL, AV_LOG_DEBUG, "Demuxer gave frame of stream_index %u\n", stream_index);
 
-        if (codec_type == AVMEDIA_TYPE_AUDIO)
-        {
-            continue;
-            stream.i_fmt_ctx = ictx.fmt_ctx;
-            stream.i_codec_ctx = ictx.codec_ctx[stream_index];
-            stream.i_stream = ictx.fmt_ctx->streams[stream_index];
-            stream.stream_idx = stream_index;
-            stream.flt_ctx = &fctxs[stream_index];
-            stream.aud_fifo = oafifo[stream_index];
-            stream.o_fmt_ctx = octx.fmt_ctx;
-            stream.o_codec_ctx = octx.codec_ctx[stream_index];
-            stream.o_stream = octx.fmt_ctx->streams[stream_index];
-            ret = transcode_audio(&stream, &ipacket);
-            if (ret == AVERROR(EAGAIN))
-            {
-                av_log(NULL, AV_LOG_INFO, "need read more audio packet\n");
-                continue;
-            }
-            else if (ret < 0)
-            {
-                goto end;
-            }
-        }
-        else if (codec_type == AVMEDIA_TYPE_VIDEO)
+        if (codec_type == AVMEDIA_TYPE_VIDEO || codec_type == AVMEDIA_TYPE_AUDIO)
         {
             stream.i_fmt_ctx = ictx.fmt_ctx;
             stream.i_codec_ctx = ictx.codec_ctx[stream_index];
@@ -695,14 +672,18 @@ int main(int argc, char **argv)
             stream.o_fmt_ctx = octx.fmt_ctx;
             stream.o_codec_ctx = octx.codec_ctx[stream_index];
             stream.o_stream = octx.fmt_ctx->streams[stream_index];
-            ret = transcode_video(&stream, &ipacket);
-            if (ret == AVERROR(EAGAIN))
-            {
-                av_log(NULL, AV_LOG_INFO, "need read more video packet\n");
+            if (codec_type == AVMEDIA_TYPE_VIDEO) {
+                ret = transcode_video(&stream, &ipacket);
+            }
+            else {
+                stream.aud_fifo = oafifo[stream_index];
+                ret = transcode_audio(&stream, &ipacket);
+            }
+            if (ret == AVERROR(EAGAIN)) {
+                //av_log(NULL, AV_LOG_INFO, "need read more packet\n");
                 continue;
             }
-            else if (ret < 0)
-            {
+            else if (ret < 0) {
                 goto end;
             }
         }
@@ -726,36 +707,30 @@ int main(int argc, char **argv)
     for (i = 0; i < ictx.fmt_ctx->nb_streams; i++)
     {
         enum AVMediaType codec_type = ictx.fmt_ctx->streams[i]->codecpar->codec_type;
-        if (codec_type == AVMEDIA_TYPE_AUDIO)
+        if (codec_type == AVMEDIA_TYPE_VIDEO || codec_type == AVMEDIA_TYPE_AUDIO)
         {
             stream.i_fmt_ctx = ictx.fmt_ctx;
             stream.i_codec_ctx = ictx.codec_ctx[i];
             stream.i_stream = ictx.fmt_ctx->streams[i];
             stream.stream_idx = i;
             stream.flt_ctx = &fctxs[i];
-            stream.aud_fifo = oafifo[stream_index];
             stream.o_fmt_ctx = octx.fmt_ctx;
             stream.o_codec_ctx = octx.codec_ctx[stream_index];
             stream.o_stream = octx.fmt_ctx->streams[stream_index];
-            flush_audio(&stream);
-        }
-        else if (codec_type == AVMEDIA_TYPE_VIDEO)
-        {
-            stream.i_fmt_ctx = ictx.fmt_ctx;
-            stream.i_codec_ctx = ictx.codec_ctx[i];
-            stream.i_stream = ictx.fmt_ctx->streams[i];
-            stream.stream_idx = i;
-            stream.flt_ctx = &fctxs[i];
-            stream.o_fmt_ctx = octx.fmt_ctx;
-            stream.o_stream = octx.fmt_ctx->streams[stream_index];
-            flush_video(&stream);
+            if (codec_type == AVMEDIA_TYPE_VIDEO) {
+                flush_video(&stream);
+            }
+            else {
+                stream.aud_fifo = oafifo[stream_index];
+                flush_audio(&stream); 
+            }
         }
         else
         {
             continue;
         }
     }
-    av_write_trailer(octx.fmt_ctx);
+    ret = av_write_trailer(octx.fmt_ctx);
 
 end:
     if (ret < 0)
@@ -768,10 +743,24 @@ end:
     // av_frame_free(&frame);
     for (i = 0; i < ictx.fmt_ctx->nb_streams; i++)
     {
-        avcodec_free_context(&ictx.codec_ctx[i]);
-        avcodec_free_context(&octx.codec_ctx[i]);
-        av_free(ictx.codec_ctx);
-        av_free(octx.codec_ctx);
+        #if 0
+        if (ictx.codec_ctx[i] != NULL)
+        {
+            avcodec_free_context(&ictx.codec_ctx[i]);
+        }
+        if (octx.codec_ctx[i] != NULL)
+        {
+            avcodec_free_context(&octx.codec_ctx[i]);
+        }
+        if (ictx.codec_ctx != NULL)
+        {
+            av_free(ictx.codec_ctx);
+        }
+        if (octx.codec_ctx != NULL)
+        {
+            av_free(octx.codec_ctx);
+        }
+        #endif
         deinit_filters(&fctxs[i]);
     }
 
@@ -784,5 +773,5 @@ end:
     }
     avformat_free_context(octx.fmt_ctx);
 
-    return ret ? 1 : 0;
+    return ret;
 }
