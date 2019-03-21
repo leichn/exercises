@@ -115,6 +115,9 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
 //    来取完缓存的帧，而SEEK操作或切换流时应调用avcodec_flush_buffers()来直接丢弃缓存帧。
 // 6. 编码器通常的冲洗方法：调用一次avcodec_send_frame(NULL)(返回成功)，然后不停调用avcodec_receive_packet()直到其返回AVERROR_EOF，取出所有缓存帧，avcodec_receive_packet()返回
 //    AVERROR_EOF这一次是没有有效数据的，仅仅获取到一个结束标志。
+// 7. 对音频来说，如果AV_CODEC_CAP_VARIABLE_FRAME_SIZE(在AVCodecContext.codec.capabilities变量中，只读)标志有效，表示编码器支持可变尺寸音频帧，送入编码器的音频帧可以包含
+//    任意数量的采样点。如果此标志无效，则每一个音频帧的采样点数目(frame->nb_samples)必须等于编码器设定的音频帧尺寸(avctx->frame_size)，最后一帧除外，最后一帧音频帧采样点数
+//    可以小于avctx->frame_size
 int av_encode_frame(AVCodecContext *enc_ctx, AVFrame *frame, AVPacket *packet)
 {
     int ret = -1;
