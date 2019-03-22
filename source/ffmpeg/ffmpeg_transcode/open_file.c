@@ -81,7 +81,9 @@ int open_input_file(const char *filename, inout_ctx_t *ictx)
     return 0;
 }
 
-int open_output_file(const char *filename, const inout_ctx_t *ictx, inout_ctx_t *octx, AVAudioFifo*** afifo)
+int open_output_file(const char *filename, const inout_ctx_t *ictx, 
+                     const char *v_enc_name, const char *a_enc_name,
+                     inout_ctx_t *octx, AVAudioFifo*** afifo)
 {
     AVStream *out_stream;
     AVStream *in_stream;
@@ -131,7 +133,20 @@ int open_output_file(const char *filename, const inout_ctx_t *ictx, inout_ctx_t 
             dec_ctx->codec_type == AVMEDIA_TYPE_AUDIO)          // 音频流或视频流
         {
             // 3.1 查找编码器AVCodec，本例使用与解码器相同的编码器
-            AVCodec *encoder = avcodec_find_encoder(dec_ctx->codec_id);
+            AVCodec *encoder = NULL;
+            if ((dec_ctx->codec_type == AVMEDIA_TYPE_VIDEO) && (strcmp(v_enc_name, "copy") != 0))
+            {
+                encoder = avcodec_find_encoder_by_name(v_enc_name);
+            }
+            else if ((dec_ctx->codec_type == AVMEDIA_TYPE_AUDIO) && (strcmp(a_enc_name, "copy") != 0))
+            {
+                encoder = avcodec_find_encoder_by_name(a_enc_name);
+            }
+            else 
+            {
+                encoder = avcodec_find_encoder(dec_ctx->codec_id);
+            }
+
             if (!encoder)
             {
                 av_log(NULL, AV_LOG_FATAL, "Necessary encoder not found\n");
@@ -174,7 +189,7 @@ int open_output_file(const char *filename, const inout_ctx_t *ictx, inout_ctx_t 
                 * then gop_size is ignored and the output of encoder
                 * will always be I frame irrespective to gop_size
                 */
-                //enc_ctx->gop_size = dec_ctx->gop_size;
+                //enc_ctx->gop_size = 10;
                 //enc_ctx->max_b_frames = 1;
             }
             else
@@ -196,7 +211,6 @@ int open_output_file(const char *filename, const inout_ctx_t *ictx, inout_ctx_t 
                     av_log(NULL, AV_LOG_ERROR, "Could not allocate FIFO\n");
                     return AVERROR(ENOMEM);
                 }
-
             }
 
             // TODO: 这个标志还不懂，以后研究
@@ -240,7 +254,6 @@ int open_output_file(const char *filename, const inout_ctx_t *ictx, inout_ctx_t 
                 return ret;
             }
         }
-
     }
     av_dump_format(ofmt_ctx, 0, filename, 1);
 

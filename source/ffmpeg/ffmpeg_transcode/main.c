@@ -542,7 +542,10 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
     // 多个frame出来，每次循环取处理一个frame
     while (1)   
     {
-        av_packet_rescale_ts(ipacket, sctx->i_stream->time_base, sctx->o_codec_ctx->time_base);
+        if (ipacket->data != NULL)  // not flush packet
+        {
+            av_packet_rescale_ts(ipacket, sctx->i_stream->time_base, sctx->o_codec_ctx->time_base);
+        }
         ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &new_packet, frame_dec);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
         {
@@ -577,7 +580,13 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
 flush_encoder:
         if (frame_flt != NULL)
         {
-            //frame_flt->pict_type = AV_PICTURE_TYPE_NONE;
+            /*
+            将原始视频帧frame送入视频编码器后生成编码帧packet，那么
+            1. 手工设置每一帧frame的帧类型为I/B/P，则编码后的packet的帧类型和frame中的一样。编码器是否设置gop_size和max_b_frames两个参数无影响。  
+            2. 将每一帧frame的帧类型设置为NONE，如果未设置编码器的“gop_size”(默认值-1)和“max_b_frames”(默认值0)两个参数，则编码器自动选择合适参数来进行编码，生成帧类型。
+            3. 将每一帧frame的帧类型设置为NONE，如果设置了编码器的“gop_size”和“max_b_frames”两个参数，则编码器按照这两个参数来进行编码，生成帧类型。
+            */
+            frame_flt->pict_type = AV_PICTURE_TYPE_NONE;
         }
         ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给编码器
@@ -706,6 +715,7 @@ static int flush_video(const stream_ctx_t *sctx)
     return 0;
 }
 
+// ./transcode -i input.flv -c:v libx264 -c:a aac output.flv
 int main(int argc, char **argv)
 {
     int ret;
@@ -716,8 +726,9 @@ int main(int argc, char **argv)
     unsigned int i;
     int got_frame;
 
-    if (argc != 3) {
-        av_log(NULL, AV_LOG_ERROR, "Usage: %s <input file> <output file>\n", argv[0]);
+    if (argc != 8 || strcmp(argv[1], "-i") != 0 || strcmp(argv[3], "-c:v") != 0 || strcmp(argv[5], "-c:a") != 0)
+    {
+        av_log(NULL, AV_LOG_ERROR, "Usage such as: %s -i input.flv -c:v libx264 -c:a aac output.ts\n", argv[0]);
         return 1;
     }
 
@@ -727,14 +738,18 @@ int main(int argc, char **argv)
 
     // 1. 初始化：打开输入，打开输出，初始化滤镜
     inout_ctx_t ictx;
-    ret = open_input_file(argv[1], &ictx);
+    char *in_fname = argv[2];
+    ret = open_input_file(argv[2], &ictx);
     if (ret < 0)
     {
         goto end;
     }
     inout_ctx_t octx;
     AVAudioFifo** oafifo = NULL;    // AVAudioFifo* oafifo[]
-    ret = open_output_file(argv[2], &ictx, &octx, &oafifo);
+    char *out_fname = argv[7];
+    char *v_enc_name = argv[4];
+    char *a_enc_name = argv[6];
+    ret = open_output_file(out_fname, &ictx, v_enc_name, a_enc_name, &octx, &oafifo);
     if (ret < 0)
     {
         goto end;
@@ -806,7 +821,7 @@ int main(int argc, char **argv)
                 // 如果编码器不支持可变尺寸音频帧(第一个判断条件生效)，而原始音频帧的尺寸又和编码器帧尺寸不一样(第二个判
                 // 断条件生效)，则需要引入音频帧FIFO，以保证每次从FIFO中取出的音频帧尺寸和编码器帧尺寸一样。音频FIFO输出
                 // 的音频帧不含时间戳信息，因此需要重新生成时间戳
-                if ((stream.o_codec_ctx->codec->capabilities | AV_CODEC_CAP_VARIABLE_FRAME_SIZE == 0) &&
+                if (((stream.o_codec_ctx->codec->capabilities | AV_CODEC_CAP_VARIABLE_FRAME_SIZE) == 0) &&
                     (stream.i_codec_ctx->frame_size != stream.o_codec_ctx->frame_size))
                 {
                     stream.aud_fifo = oafifo[stream_index];
@@ -853,8 +868,8 @@ int main(int argc, char **argv)
             stream.stream_idx = i;
             stream.flt_ctx = &fctxs[i];
             stream.o_fmt_ctx = octx.fmt_ctx;
-            stream.o_codec_ctx = octx.codec_ctx[stream_index];
-            stream.o_stream = octx.fmt_ctx->streams[stream_index];
+            stream.o_codec_ctx = octx.codec_ctx[i];
+            stream.o_stream = octx.fmt_ctx->streams[i];
             if (codec_type == AVMEDIA_TYPE_VIDEO) {
                 flush_video(&stream);
             }
