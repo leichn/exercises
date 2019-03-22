@@ -226,7 +226,6 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
         perror("Could not allocate frame");
         exit(1);
     }
-    AVFrame *frame_enc = NULL;
 
     AVPacket opacket;
     av_init_packet(&opacket);
@@ -256,9 +255,11 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
         }
         else if (ret == AVERROR_EOF)    // 解码器已冲洗
         {
-            dec_finished = true;
             av_log(NULL, AV_LOG_INFO, "decode aframe EOF\n");
-            frame_dec = NULL;
+            if (frame_dec != NULL)
+            {
+                av_frame_free(&frame_dec);
+            }
         }
         else if (ret < 0)
         {
@@ -271,7 +272,10 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
         {
             flt_finished = true;
             av_log(NULL, AV_LOG_INFO, "filtering aframe EOF\n");
-            frame_flt = NULL;
+            if (frame_flt != NULL)
+            {
+                av_frame_free(&frame_flt);
+            }
         }
         else if (ret < 0)
         {
@@ -279,17 +283,14 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
             goto end;
         }
 
-        bool flushing = dec_finished;
-        frame_enc = flushing ? NULL : frame_flt;
-
 flush_encoder:
-        ret = av_encode_frame(sctx->o_codec_ctx, frame_enc, &opacket);
+        ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
         if (ret == AVERROR(EAGAIN))     // 需要获取新的frame喂给编码器
         {
             //av_log(NULL, AV_LOG_INFO, "encode aframe need more packet\n");
-            if (frame_enc != NULL)
+            if (frame_flt != NULL)
             {
-                av_frame_free(&frame_enc);
+                av_frame_free(&frame_flt);
             }
             continue;
         }
@@ -314,7 +315,7 @@ flush_encoder:
             goto end;
         }
 
-        if (flushing)
+        if (flt_finished)
         {
             goto flush_encoder;
         }
@@ -329,13 +330,9 @@ flush_encoder:
     
 end:
     av_packet_unref(&opacket);
-    if (frame_enc != NULL)
-    {
-        av_frame_free(&frame_enc);
-    }
     if (frame_flt != NULL)
     {
-        //av_frame_free(&frame_flt);
+        av_frame_free(&frame_flt);
     }
     if (frame_dec != NULL)
     {
@@ -503,7 +500,7 @@ end:
     }
     if (frame_flt != NULL)
     {
-        //av_frame_free(&frame_flt);
+        av_frame_free(&frame_flt);
     }
     if (frame_dec != NULL)
     {
@@ -821,7 +818,7 @@ int main(int argc, char **argv)
                 // 如果编码器不支持可变尺寸音频帧(第一个判断条件生效)，而原始音频帧的尺寸又和编码器帧尺寸不一样(第二个判
                 // 断条件生效)，则需要引入音频帧FIFO，以保证每次从FIFO中取出的音频帧尺寸和编码器帧尺寸一样。音频FIFO输出
                 // 的音频帧不含时间戳信息，因此需要重新生成时间戳
-                if (((stream.o_codec_ctx->codec->capabilities | AV_CODEC_CAP_VARIABLE_FRAME_SIZE) == 0) &&
+                if (((stream.o_codec_ctx->codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE) == 0) &&
                     (stream.i_codec_ctx->frame_size != stream.o_codec_ctx->frame_size))
                 {
                     stream.aud_fifo = oafifo[stream_index];
@@ -898,27 +895,13 @@ end:
     // av_frame_free(&frame);
     for (i = 0; i < ictx.fmt_ctx->nb_streams; i++)
     {
-        #if 0
-        if (ictx.codec_ctx[i] != NULL)
-        {
-            avcodec_free_context(&ictx.codec_ctx[i]);
-        }
-        if (octx.codec_ctx[i] != NULL)
-        {
-            avcodec_free_context(&octx.codec_ctx[i]);
-        }
-        if (ictx.codec_ctx != NULL)
-        {
-            av_free(ictx.codec_ctx);
-        }
-        if (octx.codec_ctx != NULL)
-        {
-            av_free(octx.codec_ctx);
-        }
-        #endif
+        avcodec_free_context(&ictx.codec_ctx[i]);
+        avcodec_free_context(&octx.codec_ctx[i]);
         deinit_filters(&fctxs[i]);
     }
 
+    av_free(ictx.codec_ctx);
+    av_free(octx.codec_ctx);
     av_free(fctxs);
 
     avformat_close_input(&ictx.fmt_ctx);
