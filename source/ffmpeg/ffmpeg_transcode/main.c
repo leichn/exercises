@@ -94,28 +94,6 @@ static int init_filters(const inout_ctx_t *ictx, const inout_ctx_t *octx, filter
     return 0;
 }
 
-#if 0
-static int flush_encoder(unsigned int stream_index)
-{
-    int ret;
-    int got_frame;
-
-    if (!(stream_ctx[stream_index].enc_ctx->codec->capabilities &
-                AV_CODEC_CAP_DELAY))
-        return 0;
-
-    while (1) {
-        av_log(NULL, AV_LOG_INFO, "Flushing stream #%u encoder\n", stream_index);
-        ret = encode_write_frame(NULL, stream_index, &got_frame);
-        if (ret < 0)
-            break;
-        if (!got_frame)
-            return 0;
-    }
-    return ret;
-}
-#endif
-
 /**
  * Initialize one input frame for writing to the output file.
  * The frame will be exactly frame_size samples large.
@@ -246,6 +224,7 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
         dec_finished = false;
         enc_finished = false;
 
+        // 1. 时间基转换，解码
         av_packet_rescale_ts(ipacket, sctx->i_stream->time_base, sctx->o_codec_ctx->time_base);
         ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &new_packet, frame_dec);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
@@ -267,6 +246,7 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
             goto end;
         }
 
+        // 2. 滤镜处理
         ret = filtering_frame(sctx->flt_ctx, frame_dec, frame_flt);
         if (ret == AVERROR_EOF)         // 滤镜已冲洗
         {
@@ -284,6 +264,7 @@ static int transcode_audio(const stream_ctx_t *sctx, AVPacket *ipacket)
         }
 
 flush_encoder:
+        // 3. 编码
         ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
         if (ret == AVERROR(EAGAIN))     // 需要获取新的frame喂给编码器
         {
@@ -301,13 +282,14 @@ flush_encoder:
             goto end;
         }
 
-        // 2. AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
+        // 3. 更新编码帧中流序号，并进行时间基转换
+        //    AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
         //    所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
         opacket.stream_index = sctx->stream_idx;
         av_packet_rescale_ts(&opacket, sctx->o_codec_ctx->time_base, sctx->o_stream->time_base);
         av_log(NULL, AV_LOG_DEBUG, "Muxing frame\n");
 
-        // 3. 将编码后的packet写入输出媒体文件
+        // 4. 将编码后的packet写入输出媒体文件
         ret = av_interleaved_write_frame(sctx->o_fmt_ctx, &opacket);
         if (ret < 0)
         {
@@ -373,6 +355,7 @@ static int transcode_audio_with_afifo(const stream_ctx_t *sctx, AVPacket *ipacke
         dec_finished = false;
         enc_finished = false;
 
+        // 1. 时间基转换，解码
         av_packet_rescale_ts(ipacket, sctx->i_stream->time_base, sctx->o_codec_ctx->time_base);
         ret = av_decode_frame(sctx->i_codec_ctx, ipacket, &new_packet, frame_dec);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给解码器
@@ -392,6 +375,7 @@ static int transcode_audio_with_afifo(const stream_ctx_t *sctx, AVPacket *ipacke
             goto end;
         }
 
+        // 2. 滤镜处理
         ret = filtering_frame(sctx->flt_ctx, frame_dec, frame_flt);
         if (ret == AVERROR_EOF)         // 滤镜已冲洗
         {
@@ -405,6 +389,8 @@ static int transcode_audio_with_afifo(const stream_ctx_t *sctx, AVPacket *ipacke
             goto end;
         }
 
+        // 3. 使用音频fifo，从而保证每次送入编码器的音频帧尺寸满足编码器要求
+        // 3.1 将音频帧写入fifo，音频帧尺寸是解码格式中音频帧尺寸
         if (!dec_finished)
         {
             uint8_t** new_data = frame_flt->extended_data;  // 本帧中多个声道音频数据
@@ -419,6 +405,7 @@ static int transcode_audio_with_afifo(const stream_ctx_t *sctx, AVPacket *ipacke
             }
         }
 
+        // 3.2 从fifo中取出音频帧，音频帧尺寸是编码格式中音频帧尺寸
         // FIFO中可读数据大于编码器帧尺寸，则从FIFO中读走数据进行处理
         while ((av_audio_fifo_size(p_fifo) >= enc_frame_size) || dec_finished)
         {
@@ -429,7 +416,7 @@ static int transcode_audio_with_afifo(const stream_ctx_t *sctx, AVPacket *ipacke
                 av_frame_free(&frame_enc);
             }
 
-            if (!flushing)  // 已取空，刷洗编码器
+            if (!flushing)
             {
                 // 从FIFO中读取数据，编码，写入输出文件
                 ret = read_frame_from_audio_fifo(p_fifo, sctx->o_codec_ctx, &frame_enc);
@@ -439,11 +426,13 @@ static int transcode_audio_with_afifo(const stream_ctx_t *sctx, AVPacket *ipacke
                     goto end;
                 }
 
+                // 4. fifo中读取的音频帧没有时间戳信息，重新生成pts
                 frame_enc->pts = s_pts;
                 s_pts += ret;
             }
 
 flush_encoder:
+            // 5. 编码
             ret = av_encode_frame(sctx->o_codec_ctx, frame_enc, &opacket);
             if (ret == AVERROR(EAGAIN))     // 需要获取新的frame喂给编码器
             {
@@ -461,16 +450,15 @@ flush_encoder:
                 goto end;
             }
 
-            // 2. AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
-            //    所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
+            // 5.1 更新编码帧中流序号，并进行时间基转换
+            //     AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
+            //     所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
             opacket.stream_index = sctx->stream_idx;
-            av_packet_rescale_ts(&opacket,
-                                 sctx->o_codec_ctx->time_base,
-                                 sctx->o_stream->time_base);
+            av_packet_rescale_ts(&opacket, sctx->o_codec_ctx->time_base, sctx->o_stream->time_base);
             
             av_log(NULL, AV_LOG_DEBUG, "Muxing frame\n");
 
-            // 3. 将编码后的packet写入输出媒体文件
+            // 6. 将编码后的packet写入输出媒体文件
             ret = av_interleaved_write_frame(sctx->o_fmt_ctx, &opacket);
             if (ret < 0)
             {
@@ -519,7 +507,6 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
         perror("Could not allocate frame");
         exit(1);
     }
-    AVFrame *frame_enc = NULL;
 
     AVPacket opacket;
     av_init_packet(&opacket);
@@ -539,7 +526,8 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
     // 多个frame出来，每次循环取处理一个frame
     while (1)   
     {
-        if (ipacket->data != NULL)  // not flush packet
+        // 1. 时间基转换，解码
+        if (ipacket->data != NULL)  // not a flush packet
         {
             av_packet_rescale_ts(ipacket, sctx->i_stream->time_base, sctx->o_codec_ctx->time_base);
         }
@@ -561,6 +549,7 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
             goto end;
         }
 
+        // 2. 滤镜处理
         ret = filtering_frame(sctx->flt_ctx, frame_dec, frame_flt);
         if (ret == AVERROR_EOF)
         {
@@ -575,6 +564,7 @@ static int transcode_video(const stream_ctx_t *sctx, AVPacket *ipacket)
         }
 
 flush_encoder:
+        // 3. 编码
         if (frame_flt != NULL)
         {
             /*
@@ -583,8 +573,10 @@ flush_encoder:
             2. 将每一帧frame的帧类型设置为NONE，如果未设置编码器的“gop_size”(默认值-1)和“max_b_frames”(默认值0)两个参数，则编码器自动选择合适参数来进行编码，生成帧类型。
             3. 将每一帧frame的帧类型设置为NONE，如果设置了编码器的“gop_size”和“max_b_frames”两个参数，则编码器按照这两个参数来进行编码，生成帧类型。
             */
+            // 3.1 设置帧类型
             frame_flt->pict_type = AV_PICTURE_TYPE_NONE;
         }
+        // 3.2 编码
         ret = av_encode_frame(sctx->o_codec_ctx, frame_flt, &opacket);
         if (ret == AVERROR(EAGAIN))     // 需要读取新的packet喂给编码器
         {
@@ -603,12 +595,13 @@ flush_encoder:
             goto end;
         }
 
-        // 2. AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
-        //    所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
+        // 3.3 更新编码帧中流序号，并进行时间基转换
+        //     AVPacket.pts和AVPacket.dts的单位是AVStream.time_base，不同的封装格式其AVStream.time_base不同
+        //     所以输出文件中，每个packet需要根据输出封装格式重新计算pts和dts
         opacket.stream_index = sctx->stream_idx;
         av_packet_rescale_ts(&opacket, sctx->o_codec_ctx->time_base, sctx->o_stream->time_base);
 
-        // 3. 将编码后的packet写入输出媒体文件
+        // 4. 将编码后的packet写入输出媒体文件
         ret = av_interleaved_write_frame(sctx->o_fmt_ctx, &opacket);
         av_packet_unref(&opacket);
         if (ret < 0)
@@ -625,7 +618,6 @@ flush_encoder:
     
 end:
     av_packet_unref(&opacket);
-    av_frame_free(&frame_enc);
     av_frame_free(&frame_flt);
     av_frame_free(&frame_dec);
 
@@ -712,7 +704,7 @@ static int flush_video(const stream_ctx_t *sctx)
     return 0;
 }
 
-// ./transcode -i input.flv -c:v libx264 -c:a aac output.flv
+// ./transcode -i input.flv -c:v mpeg2video -c:a mp2 output.ts
 int main(int argc, char **argv)
 {
     int ret;

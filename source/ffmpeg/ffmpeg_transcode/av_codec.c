@@ -109,13 +109,13 @@ int av_decode_frame(AVCodecContext *dec_ctx, AVPacket *packet, bool *new_packet,
 // 1. 按pts递增的顺序向编码器送入原始帧frame，编码器按dts递增的顺序输出编码帧packet，实际上编码器关注输入frame的pts不关注其dts，它只管依次处理收到的frame，按需缓冲和编码
 // 2. avcodec_receive_packet()输出packet时，会设置packet.dts，从0开始，每次输出的packet的dts加1，这是视频层的dts，用户写输出前应将其转换为容器层的dts
 // 3. avcodec_receive_packet()输出packet时，packet.pts拷贝自对应的frame.pts，这是视频层的pts，用户写输出前应将其转换为容器层的pts
-// 3. avcodec_send_frame()发送NULL frame时，编码器进入flush模式
-// 4. avcodec_send_frame()发送第一个NULL会返回成功，后续的NULL会返回AVERROR_EOF
-// 5. avcodec_send_frame()多次发送NULL并不会导致编码器中缓存的帧丢失，使用avcodec_flush_buffers()可以立即丢掉编码器中缓存帧。因此编码完毕时应使用avcodec_send_frame(NULL)
+// 4. avcodec_send_frame()发送NULL frame时，编码器进入flush模式
+// 5. avcodec_send_frame()发送第一个NULL会返回成功，后续的NULL会返回AVERROR_EOF
+// 6. avcodec_send_frame()多次发送NULL并不会导致编码器中缓存的帧丢失，使用avcodec_flush_buffers()可以立即丢掉编码器中缓存帧。因此编码完毕时应使用avcodec_send_frame(NULL)
 //    来取完缓存的帧，而SEEK操作或切换流时应调用avcodec_flush_buffers()来直接丢弃缓存帧。
-// 6. 编码器通常的冲洗方法：调用一次avcodec_send_frame(NULL)(返回成功)，然后不停调用avcodec_receive_packet()直到其返回AVERROR_EOF，取出所有缓存帧，avcodec_receive_packet()返回
+// 7. 编码器通常的冲洗方法：调用一次avcodec_send_frame(NULL)(返回成功)，然后不停调用avcodec_receive_packet()直到其返回AVERROR_EOF，取出所有缓存帧，avcodec_receive_packet()返回
 //    AVERROR_EOF这一次是没有有效数据的，仅仅获取到一个结束标志。
-// 7. 对音频来说，如果AV_CODEC_CAP_VARIABLE_FRAME_SIZE(在AVCodecContext.codec.capabilities变量中，只读)标志有效，表示编码器支持可变尺寸音频帧，送入编码器的音频帧可以包含
+// 8. 对音频来说，如果AV_CODEC_CAP_VARIABLE_FRAME_SIZE(在AVCodecContext.codec.capabilities变量中，只读)标志有效，表示编码器支持可变尺寸音频帧，送入编码器的音频帧可以包含
 //    任意数量的采样点。如果此标志无效，则每一个音频帧的采样点数目(frame->nb_samples)必须等于编码器设定的音频帧尺寸(avctx->frame_size)，最后一帧除外，最后一帧音频帧采样点数
 //    可以小于avctx->frame_size
 int av_encode_frame(AVCodecContext *enc_ctx, AVFrame *frame, AVPacket *packet)

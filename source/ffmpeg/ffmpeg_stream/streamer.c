@@ -1,9 +1,11 @@
+#include <stdbool.h>
 #include <libavutil/timestamp.h>
 #include <libavformat/avformat.h>
 
-//ffmpeg -re -i tnliny.flv -c copy -f flv rtmp://192.168.0.104/live/streamxx
-//ffmpeg -i rtmp://192.168.0.104/live/streamxx -c copy tnlinyrx.flv
-
+// ffmpeg -re -i tnliny.flv -c copy -f flv rtmp://192.168.0.104/live
+// ffmpeg -i rtmp://192.168.0.104/live -c copy tnlinyrx.flv
+// ./streamer tnliny.flv rtmp://192.168.0.104/live
+// ./streamer rtmp://192.168.0.104/live tnliny.flv
 int main(int argc, char **argv)
 {
     AVOutputFormat *ofmt = NULL;
@@ -14,6 +16,7 @@ int main(int argc, char **argv)
     int stream_index = 0;
     int *stream_mapping = NULL;
     int stream_mapping_size = 0;
+    bool push_stream = false;
 
     if (argc < 3) {
         printf("usage: %s input output\n"
@@ -43,8 +46,23 @@ int main(int argc, char **argv)
 
     // 2. 打开输出
     // 2.1 分配输出ctx
-    avformat_alloc_output_context2(&ofmt_ctx, NULL, "flv", out_filename);   // rtmp
-    //avformat_alloc_output_context2(&ofmt_ctx, NULL, "mpegts", out_filename);   // udp
+    char *ofmt_name = NULL;
+    if (strstr(out_filename, "rtmp://") != NULL)
+    {
+        push_stream = true;
+        ofmt_name = "flv";
+    }
+    else if (strstr(out_filename, "udp://") != NULL)
+    {
+        push_stream = true;
+        ofmt_name = "mpegts";
+    }
+    else
+    {
+        push_stream = false;
+        ofmt_name = NULL;
+    }
+    avformat_alloc_output_context2(&ofmt_ctx, NULL, ofmt_name, out_filename);
     if (!ofmt_ctx) {
         printf("Could not create output context\n");
         ret = AVERROR_UNKNOWN;
@@ -60,7 +78,11 @@ int main(int argc, char **argv)
 
     ofmt = ofmt_ctx->oformat;
 
-    for (i = 0; i < ifmt_ctx->nb_streams; i++) {
+    AVRational frame_rate;
+    double duration;
+
+    for (i = 0; i < ifmt_ctx->nb_streams; i++)
+    {
         AVStream *out_stream;
         AVStream *in_stream = ifmt_ctx->streams[i];
         AVCodecParameters *in_codecpar = in_stream->codecpar;
@@ -70,6 +92,12 @@ int main(int argc, char **argv)
             in_codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
             stream_mapping[i] = -1;
             continue;
+        }
+
+        if (push_stream && (in_codecpar->codec_type == AVMEDIA_TYPE_VIDEO))
+        {
+            frame_rate = av_guess_frame_rate(ifmt_ctx, in_stream, NULL);
+            duration = (frame_rate.num && frame_rate.den ? av_q2d((AVRational){frame_rate.den, frame_rate.num}) : 0);
         }
 
         stream_mapping[i] = stream_index++;
@@ -125,10 +153,9 @@ int main(int argc, char **argv)
         }
 
         int codec_type = in_stream->codecpar->codec_type;
-        if (codec_type == AV_CODEC_VIDEO)
+        if (push_stream && (codec_type == AVMEDIA_TYPE_VIDEO))
         {
-            in_stream->duration * av_q2d(stream->time_base);
-            int duration = pkt.duration
+            av_usleep((int64_t)(duration*AV_TIME_BASE));
         }
 
         pkt.stream_index = stream_mapping[pkt.stream_index];
@@ -173,4 +200,3 @@ end:
 
     return 0;
 }
-
