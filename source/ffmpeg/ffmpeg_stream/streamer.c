@@ -16,7 +16,6 @@ int main(int argc, char **argv)
     int stream_index = 0;
     int *stream_mapping = NULL;
     int stream_mapping_size = 0;
-    bool push_stream = false;
 
     if (argc < 3) {
         printf("usage: %s input output\n"
@@ -46,6 +45,7 @@ int main(int argc, char **argv)
 
     // 2. 打开输出
     // 2.1 分配输出ctx
+    bool push_stream = false;
     char *ofmt_name = NULL;
     if (strstr(out_filename, "rtmp://") != NULL)
     {
@@ -182,8 +182,8 @@ int main(int argc, char **argv)
 
     // 3.5 写输出文件尾
     av_write_trailer(ofmt_ctx);
-end:
 
+end:
     avformat_close_input(&ifmt_ctx);
 
     /* close output */
