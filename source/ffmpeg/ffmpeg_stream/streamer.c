@@ -47,18 +47,15 @@ int main(int argc, char **argv)
     // 2.1 分配输出ctx
     bool push_stream = false;
     char *ofmt_name = NULL;
-    if (strstr(out_filename, "rtmp://") != NULL)
-    {
+    if (strstr(out_filename, "rtmp://") != NULL) {
         push_stream = true;
         ofmt_name = "flv";
     }
-    else if (strstr(out_filename, "udp://") != NULL)
-    {
+    else if (strstr(out_filename, "udp://") != NULL) {
         push_stream = true;
         ofmt_name = "mpegts";
     }
-    else
-    {
+    else {
         push_stream = false;
         ofmt_name = NULL;
     }
@@ -81,8 +78,7 @@ int main(int argc, char **argv)
     AVRational frame_rate;
     double duration;
 
-    for (i = 0; i < ifmt_ctx->nb_streams; i++)
-    {
+    for (i = 0; i < ifmt_ctx->nb_streams; i++) {
         AVStream *out_stream;
         AVStream *in_stream = ifmt_ctx->streams[i];
         AVCodecParameters *in_codecpar = in_stream->codecpar;
@@ -94,8 +90,7 @@ int main(int argc, char **argv)
             continue;
         }
 
-        if (push_stream && (in_codecpar->codec_type == AVMEDIA_TYPE_VIDEO))
-        {
+        if (push_stream && (in_codecpar->codec_type == AVMEDIA_TYPE_VIDEO)) {
             frame_rate = av_guess_frame_rate(ifmt_ctx, in_stream, NULL);
             duration = (frame_rate.num && frame_rate.den ? av_q2d((AVRational){frame_rate.den, frame_rate.num}) : 0);
         }
@@ -142,8 +137,13 @@ int main(int argc, char **argv)
 
         // 3.2 从输出流读取一个packet
         ret = av_read_frame(ifmt_ctx, &pkt);
-        if (ret < 0)
+        if (ret < 0) {
+            if ((ret == AVERROR_EOF) || avio_feof(ifmt_ctx->pb))
+            {
+                printf("av_read_frame() end of file\n");
+            }
             break;
+        }
 
         in_stream  = ifmt_ctx->streams[pkt.stream_index];
         if (pkt.stream_index >= stream_mapping_size ||
@@ -153,8 +153,7 @@ int main(int argc, char **argv)
         }
 
         int codec_type = in_stream->codecpar->codec_type;
-        if (push_stream && (codec_type == AVMEDIA_TYPE_VIDEO))
-        {
+        if (push_stream && (codec_type == AVMEDIA_TYPE_VIDEO)) {
             av_usleep((int64_t)(duration*AV_TIME_BASE));
         }
 
@@ -187,8 +186,9 @@ end:
     avformat_close_input(&ifmt_ctx);
 
     /* close output */
-    if (ofmt_ctx && !(ofmt->flags & AVFMT_NOFILE))
+    if (ofmt_ctx && !(ofmt->flags & AVFMT_NOFILE)) {
         avio_closep(&ofmt_ctx->pb);
+    }
     avformat_free_context(ofmt_ctx);
 
     av_freep(&stream_mapping);
