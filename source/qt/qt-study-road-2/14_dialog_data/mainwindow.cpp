@@ -45,8 +45,7 @@ void MainWindow::open()
     dialog.setWindowTitle(tr("Hello, dialog!"));
 
     QDialogButtonBox *button = new QDialogButtonBox(&dialog);
-    button->addButton( "OK", QDialogButtonBox::YesRole);
-    button->addButton( "CANCEL", QDialogButtonBox::NoRole);
+    button->setStandardButtons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     connect(button, SIGNAL(accepted()), &dialog, SLOT(accept()));
     connect(button, SIGNAL(rejected()), &dialog, SLOT(reject()));
 
