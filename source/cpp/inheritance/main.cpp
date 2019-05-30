@@ -1,4 +1,5 @@
 #include <iostream>
+#include <stdio.h>
 using namespace std;
 
 class B
@@ -36,7 +37,7 @@ public:
         cout << "default D constructor" << endl;
     }
 
-    D(int a, int b)// : B(1, 2)
+    D(int a, int b) : B(1, 2)
     {
         u = a;
         v = b;
