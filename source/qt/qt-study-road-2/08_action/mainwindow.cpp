@@ -46,12 +46,12 @@ MainWindow::MainWindow(QWidget *parent) :
     // triggered() 信号发生时，将自动调用 open() 函数。是为信号槽机制
     connect(openAction, &QAction::triggered, this, &MainWindow::open);
 
-    // 为 MainWindow 窗口中添加菜单 "File"
+    // 为 MainWindow 窗口添加菜单 "File"
     QMenu *file = menuBar()->addMenu(tr("&File"));
     // 为 "File" 菜单添加动作
     file->addAction(openAction);
 
-    // 为 MainWindow 窗口中添加工具栏按钮 "File"
+    // 为 MainWindow 窗口添加工具栏按钮 "File"
     QToolBar *toolBar = addToolBar(tr("&File"));
     // 为工具栏按钮 "File" 添加动作
     toolBar->addAction(openAction);

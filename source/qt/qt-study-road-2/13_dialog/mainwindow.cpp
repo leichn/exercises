@@ -48,16 +48,18 @@ void MainWindow::open()
     // 2. 非模块对话框不会阻塞其他窗口的输入。如记事本程序的“查找”对话框。
     //    非模态对话框使用 QDialog::show() 显示。
 
-#if 0                   // 模态
+#if 0                   // 栈上创建，本函数返回里 dialog 对象被析构
     QDialog dialog;
     dialog.setWindowTitle(tr("Hello, dialog!"));
     dialog.exec();      // 应用程序级别模态
     // dialog.open();   // 窗口级别模态，单这一句不行，还需要更多代码支持，此处暂不深究
-    // dialog.show();   // 非模态。这一句不会阻塞程序，open() 函数返回时对话框立即被析构，因此一闪即逝
-#else                   // 非模态
+    // dialog.show();   // 非模态。这一句不会阻塞程序，本函数返回时堆上对象 dialog 立即被析构，因此一闪即逝
+#else                   // 堆上创建，本函数返回里 dialog 对象不会被析构
     QDialog *dialog = new QDialog;
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowTitle(tr("Hello, dialog!"));
-    dialog->show();
+    // dialog->exec();  // 应用程序级别模态
+    // dialog->open();  // 窗口级别模态，单这一句不行，还需要更多代码支持，此处暂不深究
+    dialog->show();     // 非模态。这一句不会阻塞程序。本 函数返回时堆上对象 dialog 不会被析构
 #endif
 }

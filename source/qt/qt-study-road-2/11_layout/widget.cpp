@@ -14,7 +14,7 @@ Widget::Widget(QWidget *parent)
     slider->setRange(0, 130);
 
     QObject::connect(slider, &QSlider::valueChanged, spinBox, &QSpinBox::setValue);
-    // QSpinBox::valueChanged()有两个重载函数，因此此处使用函数指针显示指向其中一个函数
+    // QSpinBox::valueChanged()有两个重载函数，因此此处使用函数指针显式指向其中一个函数
     // 如果不这样处理，下一步 connect() 会编译出错
     void (QSpinBox:: *spinBoxSignal)(int) = &QSpinBox::valueChanged;
     QObject::connect(spinBox, spinBoxSignal, slider, &QSlider::setValue);
