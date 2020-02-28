@@ -4,7 +4,7 @@ using namespace std;
 class Fish
 {
 public:
-   virtual void Swim() { cout << "Fish swims!" << endl; }
+   /*virtual */void Swim() { cout << "Fish swims!" << endl; }
 };
 
 class Tuna : public Fish
@@ -13,13 +13,13 @@ public:
    void Swim() { cout << "Tuna swims!" << endl; }
 };
 
-class Carp:public Fish
+class Carp : public Fish
 {
 public:
    void Swim() { cout << "Carp swims!" << endl; }
 };
 
-int main() 
+int main()
 {
    // 引用形式
    Fish myFish;
