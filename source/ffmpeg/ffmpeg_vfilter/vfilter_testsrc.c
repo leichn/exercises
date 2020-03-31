@@ -219,7 +219,7 @@ int main(int argc, char *argv[])
 
     int ret = 0;
 
-    // 初始化SDL子系统：缺省(事件处理、文件IO、线程)、视频、音频、定时器
+    // 初始化SDL子系统
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_EVENTS))
     {  
         av_log(NULL, AV_LOG_ERROR, "SDL_Init() failed: %s\n", SDL_GetError()); 
@@ -245,7 +245,7 @@ int main(int argc, char *argv[])
 #endif
 
     filter_ctx_t filter_ctx = { NULL, NULL, NULL };
-    ret = init_filters(argv[3], &input_vfmt, &filter_ctx);
+    ret = init_video_filters(argv[3], &input_vfmt, &filter_ctx);
     if (ret < 0)
     {
         goto exit1;

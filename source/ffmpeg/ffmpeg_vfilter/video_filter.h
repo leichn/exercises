@@ -23,7 +23,6 @@ typedef struct {
 
 
 int init_video_filters(const char *filters_descr, const input_vfmt_t *vfmt, filter_ctx_t *fctx);
-int init_audio_filters(const char *filters_descr, const input_afmt_t *vfmt, filter_ctx_t *fctx);
 int deinit_filters(filter_ctx_t *fctx);
 int filtering_video_frame(const filter_ctx_t *fctx, AVFrame *frame_in, AVFrame *frame_out);
 

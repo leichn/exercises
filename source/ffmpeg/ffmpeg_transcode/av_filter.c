@@ -39,8 +39,8 @@ void get_filter_oafmt(const inout_ctx_t *octx, int stream_idx, filter_oafmt_t *o
 
 // 创建配置一个滤镜图，在后续滤镜处理中，可以往此滤镜图输入数据并从滤镜图获得输出数据
 // @filters_descr: I, 以字符串形式描述的滤镜图，形如"transpose=cclock,pad=iw*2:ih"
-// @vfmt:          I, 输入图像格式，用于设置滤镜图输入节点(buffer滤镜)
-// @pix_fmts:      I, 输出像素格式，用于设置滤镜图输出节点(buffersink滤镜)。
+// @ivfmt:         I, 输入图像格式，用于设置滤镜图输入节点(buffer滤镜)
+// @ovfmt:         I, 输出像素格式，用于设置滤镜图输出节点(buffersink滤镜)。
 //                    数组形式，以-1标识有效元素结束，形如{AV_PIX_FMT_YUV420P, AV_PIX_FMT_RGB24, -1}
 // @fctx:          O, 配置好的 filter context
 int init_video_filters(const char *filters_descr, 
@@ -208,7 +208,7 @@ int init_audio_filters(const char *filters_descr,
         p_args = args;
     }
 
-    // buffer滤镜：缓冲视频帧，作为滤镜图的输入
+    // buffer滤镜：缓冲音频帧，作为滤镜图的输入
     const AVFilter *bufsrc  = avfilter_get_by_name("abuffer");
     // 为buffersrc滤镜创建滤镜实例buffersrc_ctx，命名为"in"
     // 将新创建的滤镜实例buffersrc_ctx添加到滤镜图filter_graph中
@@ -220,7 +220,7 @@ int init_audio_filters(const char *filters_descr,
         goto end;
     }
 
-    // buffersink滤镜：缓冲视频帧，作为滤镜图的输出
+    // buffersink滤镜：缓冲音频帧，作为滤镜图的输出
     const AVFilter *bufsink = avfilter_get_by_name("abuffersink");
     /* buffer video sink: to terminate the filter chain. */
     // 为buffersink滤镜创建滤镜实例buffersink_ctx，命名为"out"
