@@ -3,6 +3,7 @@
  *
  * history:
  *   2018-11-27 - [lei]     created file
+ *   2025-03-28 - [lei]     update ffmpeg to 7.1.1
  *
  * details:
  *   A simple ffmpeg player.
@@ -16,11 +17,12 @@
 #include <stdio.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 #include <SDL2/SDL.h>
-#include <SDL2/SDL_video.h>
-#include <SDL2/SDL_render.h>
 #include <SDL2/SDL_rect.h>
+#include <SDL2/SDL_render.h>
+#include <SDL2/SDL_video.h>
 
 int main(int argc, char *argv[])
 {
@@ -29,29 +31,26 @@ int main(int argc, char *argv[])
     AVCodecContext*     p_codec_ctx = NULL;
     AVCodecParameters*  p_codec_par = NULL;
     AVStream*           p_stream = NULL;
-    AVCodec*            p_codec = NULL;
+    const AVCodec*      p_codec = NULL;
     AVFrame*            p_frm_raw = NULL;        // 帧，由包解码得到原始帧
     AVFrame*            p_frm_yuv = NULL;        // 帧，由原始帧色彩转换得到
     AVPacket*           p_packet = NULL;         // 包，从流中读出的一段数据
-    struct SwsContext*  sws_ctx = NULL;
+    struct SwsContext*  p_sws_ctx = NULL;
     int                 buf_size;
-    uint8_t*            buffer = NULL;
+    uint8_t*            p_buffer = NULL;
     int                 i;
     int                 v_idx;
     int                 ret;
-    SDL_Window*         screen; 
-    SDL_Renderer*       sdl_renderer;
-    SDL_Texture*        sdl_texture;
-    SDL_Rect            sdl_rect;
+    SDL_Window*         p_sdl_screen; 
+    SDL_Renderer*       p_sdl_renderer;
+    SDL_Texture*        p_sdl_texture;
+    SDL_Rect            p_sdl_rect;
 
     if (argc < 2)
     {
         printf("Please provide a movie file\n");
         return -1;
     }
-
-    // 初始化libavformat(所有格式)，注册所有复用器/解复用器
-    // av_register_all();   // 已被申明为过时的，直接不再使用即可
 
     // A1. 打开视频文件：读取文件头，将文件格式信息存储在p_fmt_ctx中
     ret = avformat_open_input(&p_fmt_ctx, argv[1], NULL, NULL);
@@ -121,24 +120,24 @@ int main(int argc, char *argv[])
     }
 
     // A6. 分配AVFrame
-    // A6.1 分配AVFrame结构，注意并不分配data buffer(即AVFrame.*data[])
+    // A6.1 分配AVFrame结构，注意并不分配data p_buffer(即AVFrame.*data[])
     p_frm_raw = av_frame_alloc();
     p_frm_yuv = av_frame_alloc();
 
     // A6.2 为AVFrame.*data[]手工分配缓冲区，用于存储sws_scale()中目的帧视频数据
-    //     p_frm_raw的data_buffer由av_read_frame()分配，因此不需手工分配
-    //     p_frm_yuv的data_buffer无处分配，因此在此处手工分配
+    //      p_frm_raw的data_buffer由av_read_frame()分配，因此不需手工分配
+    //      p_frm_yuv的data_buffer无处分配，因此在此处手工分配
     buf_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, 
                                         p_codec_ctx->width, 
                                         p_codec_ctx->height, 
                                         1
                                        );
     // buffer将作为p_frm_yuv的视频数据缓冲区
-    buffer = (uint8_t *)av_malloc(buf_size);
+    p_buffer = (uint8_t *)av_malloc(buf_size);
     // 使用给定参数设定p_frm_yuv->data和p_frm_yuv->linesize
     av_image_fill_arrays(p_frm_yuv->data,           // dst data[]
                          p_frm_yuv->linesize,       // dst linesize[]
-                         buffer,                    // src buffer
+                         p_buffer,                    // src p_buffer
                          AV_PIX_FMT_YUV420P,        // pixel format
                          p_codec_ctx->width,        // width
                          p_codec_ctx->height,       // height
@@ -151,17 +150,17 @@ int main(int argc, char *argv[])
     //     如果解码后得到图像的不被SDL支持，不进行图像转换的话，SDL是无法正常显示图像的
     //     如果解码后得到图像的能被SDL支持，则不必进行图像转换
     //     这里为了编码简便，统一转换为SDL支持的格式AV_PIX_FMT_YUV420P==>SDL_PIXELFORMAT_IYUV
-    sws_ctx = sws_getContext(p_codec_ctx->width,    // src width
-                             p_codec_ctx->height,   // src height
-                             p_codec_ctx->pix_fmt,  // src format
-                             p_codec_ctx->width,    // dst width
-                             p_codec_ctx->height,   // dst height
-                             AV_PIX_FMT_YUV420P,    // dst format
-                             SWS_BICUBIC,           // flags
-                             NULL,                  // src filter
-                             NULL,                  // dst filter
-                             NULL                   // param
-                            );                 
+    p_sws_ctx = sws_getContext(p_codec_ctx->width,    // src width
+                               p_codec_ctx->height,   // src height
+                               p_codec_ctx->pix_fmt,  // src format
+                               p_codec_ctx->width,    // dst width
+                               p_codec_ctx->height,   // dst height
+                               AV_PIX_FMT_YUV420P,    // dst format
+                               SWS_BICUBIC,           // flags
+                               NULL,                  // src filter
+                               NULL,                  // dst filter
+                               NULL                   // param
+                              );                 
 
 
     // B1. 初始化SDL子系统：缺省(事件处理、文件IO、线程)、视频、音频、定时器
@@ -173,15 +172,15 @@ int main(int argc, char *argv[])
     
     // B2. 创建SDL窗口，SDL 2.0支持多窗口
     //     SDL_Window即运行程序后弹出的视频窗口，同SDL 1.x中的SDL_Surface
-    screen = SDL_CreateWindow("Simplest ffmpeg player's Window", 
-                              SDL_WINDOWPOS_UNDEFINED,// 不关心窗口X坐标
-                              SDL_WINDOWPOS_UNDEFINED,// 不关心窗口Y坐标
-                              p_codec_ctx->width, 
-                              p_codec_ctx->height,
-                              SDL_WINDOW_OPENGL
-                             );
+    p_sdl_screen = SDL_CreateWindow("Simplest ffmpeg player's Window", 
+                                    SDL_WINDOWPOS_UNDEFINED,// 不关心窗口X坐标
+                                    SDL_WINDOWPOS_UNDEFINED,// 不关心窗口Y坐标
+                                    p_codec_ctx->width, 
+                                    p_codec_ctx->height,
+                                    SDL_WINDOW_OPENGL
+                                   );
 
-    if (screen == NULL)
+    if (p_sdl_screen == NULL)
     {  
         printf("SDL_CreateWindow() failed: %s\n", SDL_GetError());  
         return -1;
@@ -189,22 +188,22 @@ int main(int argc, char *argv[])
 
     // B3. 创建SDL_Renderer
     //     SDL_Renderer：渲染器
-    sdl_renderer = SDL_CreateRenderer(screen, -1, 0);
+    p_sdl_renderer = SDL_CreateRenderer(p_sdl_screen, -1, 0);
 
     // B4. 创建SDL_Texture
     //     一个SDL_Texture对应一帧YUV数据，同SDL 1.x中的SDL_Overlay
     //     此处第2个参数使用的是SDL中的像素格式，对比参考注释A7
     //     FFmpeg中的像素格式AV_PIX_FMT_YUV420P对应SDL中的像素格式SDL_PIXELFORMAT_IYUV
-    sdl_texture = SDL_CreateTexture(sdl_renderer, 
-                                    SDL_PIXELFORMAT_IYUV, 
-                                    SDL_TEXTUREACCESS_STREAMING,
-                                    p_codec_ctx->width,
-                                    p_codec_ctx->height);  
+    p_sdl_texture = SDL_CreateTexture(p_sdl_renderer, 
+                                      SDL_PIXELFORMAT_IYUV, 
+                                      SDL_TEXTUREACCESS_STREAMING,
+                                      p_codec_ctx->width,
+                                      p_codec_ctx->height);  
 
-    sdl_rect.x = 0;
-    sdl_rect.y = 0;
-    sdl_rect.w = p_codec_ctx->width;
-    sdl_rect.h = p_codec_ctx->height;
+    p_sdl_rect.x = 0;
+    p_sdl_rect.y = 0;
+    p_sdl_rect.w = p_codec_ctx->width;
+    p_sdl_rect.h = p_codec_ctx->height;
 
     p_packet = (AVPacket *)av_malloc(sizeof(AVPacket));
     // A8. 从视频文件中读取一个packet
@@ -241,7 +240,7 @@ int main(int argc, char *argv[])
             // stride/pitch: 一行图像所占的字节数，Stride=BytesPerPixel*Width+Padding，注意对齐
             // AVFrame.*data[]: 每个数组元素指向对应plane
             // AVFrame.linesize[]: 每个数组元素表示对应plane中一行图像所占的字节数
-            sws_scale(sws_ctx,                                  // sws context
+            sws_scale(p_sws_ctx,                                  // sws context
                       (const uint8_t *const *)p_frm_raw->data,  // src slice
                       p_frm_raw->linesize,                      // src stride
                       0,                                        // src slice y
@@ -251,8 +250,8 @@ int main(int argc, char *argv[])
                      );
             
             // B5. 使用新的YUV像素数据更新SDL_Rect
-            SDL_UpdateYUVTexture(sdl_texture,                   // sdl texture
-                                 &sdl_rect,                     // sdl rect
+            SDL_UpdateYUVTexture(p_sdl_texture,                   // sdl texture
+                                 &p_sdl_rect,                     // sdl rect
                                  p_frm_yuv->data[0],            // y plane
                                  p_frm_yuv->linesize[0],        // y pitch
                                  p_frm_yuv->data[1],            // u plane
@@ -262,15 +261,15 @@ int main(int argc, char *argv[])
                                  );
             
             // B6. 使用特定颜色清空当前渲染目标
-            SDL_RenderClear(sdl_renderer);
+            SDL_RenderClear(p_sdl_renderer);
             // B7. 使用部分图像数据(texture)更新当前渲染目标
-            SDL_RenderCopy(sdl_renderer,                        // sdl renderer
-                           sdl_texture,                         // sdl texture
+            SDL_RenderCopy(p_sdl_renderer,                        // sdl renderer
+                           p_sdl_texture,                         // sdl texture
                            NULL,                                // src rect, if NULL copy texture
-                           &sdl_rect                            // dst rect
+                           &p_sdl_rect                            // dst rect
                           );
             // B8. 执行渲染，更新屏幕显示
-            SDL_RenderPresent(sdl_renderer);  
+            SDL_RenderPresent(p_sdl_renderer);  
 
             // B9. 控制帧率为25FPS，此处不够准确，未考虑解码消耗的时间
             SDL_Delay(40);
@@ -279,11 +278,11 @@ int main(int argc, char *argv[])
     }
 
     SDL_Quit();
-    sws_freeContext(sws_ctx);
-    av_free(buffer);
+    sws_freeContext(p_sws_ctx);
+    av_free(p_buffer);
     av_frame_free(&p_frm_yuv);
     av_frame_free(&p_frm_raw);
-    avcodec_close(p_codec_ctx);
+    avcodec_free_context(&p_codec_ctx);
     avformat_close_input(&p_fmt_ctx);
 
     return 0;
